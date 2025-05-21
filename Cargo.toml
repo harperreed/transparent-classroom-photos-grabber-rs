@@ -1,6 +1,8 @@
 [package]
 name = "transparent-classroom-photos-grabber-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A Rust implementation to download photos from Transparent Classroom"
 
 [dependencies]
