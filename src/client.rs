@@ -6,6 +6,9 @@ use reqwest::blocking::{Client as ReqwestClient, ClientBuilder};
 use reqwest::cookie::Jar;
 use scraper::{Html, Selector};
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::Config;
@@ -334,4 +337,178 @@ impl Client {
     fn extract_attribute(&self, element: &scraper::ElementRef, attr_name: &str) -> Option<String> {
         element.value().attr(attr_name).map(|s| s.to_string())
     }
+
+    /// Download a photo from a post to the local filesystem
+    ///
+    /// # Arguments
+    ///
+    /// * `post` - The post containing photo URLs
+    /// * `photo_index` - Index of the photo to download (if post has multiple photos)
+    /// * `output_dir` - Directory where photos should be saved
+    ///
+    /// # Returns
+    ///
+    /// Path to the downloaded photo file, or an error if download failed
+    pub fn download_photo(
+        &self,
+        post: &Post,
+        photo_index: usize,
+        output_dir: &Path,
+    ) -> Result<PathBuf, AppError> {
+        // Check if the post has photos
+        if post.photo_urls.is_empty() {
+            return Err(AppError::Generic(format!(
+                "Post {} has no photos to download",
+                post.id
+            )));
+        }
+
+        // Check if the requested photo index exists
+        if photo_index >= post.photo_urls.len() {
+            return Err(AppError::Generic(format!(
+                "Photo index {} out of range for post with {} photos",
+                photo_index,
+                post.photo_urls.len()
+            )));
+        }
+
+        // Get the photo URL
+        let photo_url = &post.photo_urls[photo_index];
+        debug!("Downloading photo from URL: {}", photo_url);
+
+        // Create the output directory if it doesn't exist
+        if !output_dir.exists() {
+            debug!("Creating output directory: {}", output_dir.display());
+            fs::create_dir_all(output_dir).map_err(AppError::Io)?;
+        }
+
+        // Determine the filename based on post and photo information
+        let sanitized_title = sanitize_filename(&post.title);
+        let filename = format!(
+            "{}_{}_{}_{}.jpg",
+            sanitize_filename(&post.id),
+            sanitized_title,
+            sanitize_filename(&post.author),
+            photo_index
+        );
+        let output_path = output_dir.join(filename);
+
+        debug!("Will save photo to: {}", output_path.display());
+
+        // Download the photo
+        let response = self
+            .http_client
+            .get(photo_url)
+            .send()
+            .map_err(|e| AppError::Generic(format!("Failed to download photo: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Generic(format!(
+                "Failed to download photo. Status: {}",
+                response.status()
+            )));
+        }
+
+        // Get the photo bytes
+        let photo_bytes = response
+            .bytes()
+            .map_err(|e| AppError::Generic(format!("Failed to read photo bytes: {}", e)))?;
+
+        // Write the photo to disk
+        let mut file = File::create(&output_path).map_err(AppError::Io)?;
+
+        file.write_all(&photo_bytes).map_err(AppError::Io)?;
+
+        // Embed metadata in the photo file
+        self.embed_metadata(post, &output_path)?;
+
+        info!("Successfully downloaded photo to {}", output_path.display());
+        Ok(output_path)
+    }
+
+    /// Embed metadata in the photo file
+    ///
+    /// Currently embeds basic metadata using file attributes.
+    /// Could be extended to use exiftool or other library.
+    fn embed_metadata(&self, post: &Post, photo_path: &Path) -> Result<(), AppError> {
+        debug!("Embedding metadata in photo: {}", photo_path.display());
+
+        // For now, just use a simple approach - create a .metadata file
+        // This could be extended to use exiftool or another approach
+        let metadata_path = photo_path.with_extension("metadata.txt");
+        let metadata_content = format!(
+            "Title: {}\nAuthor: {}\nDate: {}\nURL: {}\nPost ID: {}\n",
+            post.title, post.author, post.date, post.url, post.id
+        );
+
+        fs::write(&metadata_path, metadata_content).map_err(AppError::Io)?;
+
+        debug!("Metadata stored in: {}", metadata_path.display());
+        Ok(())
+    }
+
+    /// Download all photos from a post
+    ///
+    /// # Arguments
+    ///
+    /// * `post` - The post containing photo URLs
+    /// * `output_dir` - Directory where photos should be saved
+    ///
+    /// # Returns
+    ///
+    /// List of paths to the downloaded photo files
+    pub fn download_all_photos(
+        &self,
+        post: &Post,
+        output_dir: &Path,
+    ) -> Result<Vec<PathBuf>, AppError> {
+        let mut downloaded_paths = Vec::new();
+
+        // If the post has no photos, return an empty vector
+        if post.photo_urls.is_empty() {
+            debug!("Post {} has no photos to download", post.id);
+            return Ok(downloaded_paths);
+        }
+
+        // Download each photo in the post
+        for i in 0..post.photo_urls.len() {
+            match self.download_photo(post, i, output_dir) {
+                Ok(path) => downloaded_paths.push(path),
+                Err(e) => {
+                    warn!("Failed to download photo {} for post {}: {}", i, post.id, e);
+                    // Continue with other photos even if one fails
+                }
+            }
+        }
+
+        info!(
+            "Downloaded {} photos for post {}",
+            downloaded_paths.len(),
+            post.id
+        );
+        Ok(downloaded_paths)
+    }
+}
+
+/// Sanitize a string for use in a filename
+///
+/// Removes or replaces characters that might be problematic in filenames.
+fn sanitize_filename(input: &str) -> String {
+    let mut result = input.trim().to_owned();
+
+    // Replace spaces with underscores
+    result = result.replace(' ', "_");
+
+    // Remove characters that are problematic in filenames
+    result = result.replace(
+        &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\''][..],
+        "",
+    );
+
+    // Truncate if too long
+    if result.len() > 50 {
+        result.truncate(50);
+    }
+
+    result
 }

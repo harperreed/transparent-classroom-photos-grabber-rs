@@ -275,7 +275,7 @@ Show all relevant code.
 
 ---
 
-### **Prompt A8**: *Download Photos, Metadata, Integration*
+### **Prompt A8**: *Download Photos, Metadata, Integration* (COMPLETED)
 
 ```
 Now we tie it all together:

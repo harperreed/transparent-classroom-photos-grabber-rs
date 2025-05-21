@@ -1,7 +1,12 @@
 use mockito::Matcher;
 use std::env;
+use std::fs;
 use tempfile::TempDir;
-use transparent_classroom_photos_grabber_rs::{client::Client, config::Config, error::AppError};
+use transparent_classroom_photos_grabber_rs::{
+    client::{Client, Post},
+    config::Config,
+    error::AppError,
+};
 
 // Helper function to create a test configuration
 fn create_test_config() -> Config {
@@ -429,5 +434,221 @@ fn test_get_posts() {
         assert!(second_post.url.ends_with("/observations/456"));
         assert_eq!(second_post.photo_urls.len(), 1);
         assert!(second_post.photo_urls[0].ends_with("/uploads/photos/456.jpg"));
+    });
+}
+
+#[test]
+fn test_download_photo() {
+    with_isolated_env(|| {
+        // Create a mock server
+        let mut server = mockito::Server::new();
+
+        // Mock the login flow for authentication
+        let signin_html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="csrf-token" content="test_csrf_token_12345" />
+        </head>
+        <body>
+            <form action="/souls/sign_in" method="post">
+                <input type="hidden" name="authenticity_token" value="test_csrf_token_12345" />
+            </form>
+        </body>
+        </html>
+        "#;
+
+        let _signin_get_mock = server
+            .mock("GET", "/souls/sign_in")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(signin_html)
+            .create();
+
+        let dashboard_html = r#"<!DOCTYPE html><html><body><h1>Dashboard</h1></body></html>"#;
+
+        let _signin_post_mock = server
+            .mock("POST", "/souls/sign_in")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(dashboard_html)
+            .create();
+
+        // Mock the photo URL
+        let photo_path = "/uploads/photos/123.jpg";
+        let photo_bytes = b"FAKE_IMAGE_DATA_FOR_TESTING";
+
+        let photo_mock = server
+            .mock("GET", photo_path)
+            .with_status(200)
+            .with_header("content-type", "image/jpeg")
+            .with_body(photo_bytes.as_slice())
+            .create();
+
+        // Create the client with mockito server URL
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Log in first
+        client.login().expect("Login failed");
+
+        // Create a temporary directory to store downloaded photos
+        let temp_dir = TempDir::new().expect("Failed to create temporary directory for photos");
+        let output_dir = temp_dir.path();
+
+        // Create a test post with a photo URL
+        let post = Post {
+            id: "test-123".to_string(),
+            title: "Test Photo Post".to_string(),
+            author: "Test Author".to_string(),
+            date: "Jan 20, 2023".to_string(),
+            url: format!("{}/posts/123", server.url()),
+            photo_urls: vec![format!("{}{}", server.url(), photo_path)],
+        };
+
+        // Download the photo
+        let result = client.download_photo(&post, 0, output_dir);
+
+        // Verify the mock was called
+        photo_mock.assert();
+
+        // Verify the download succeeded
+        assert!(result.is_ok(), "Photo download failed: {:?}", result.err());
+
+        // Verify the file exists
+        let downloaded_path = result.unwrap();
+        assert!(downloaded_path.exists(), "Downloaded file doesn't exist");
+
+        // Verify the file has the correct content
+        let content = fs::read(&downloaded_path).expect("Failed to read downloaded file");
+        assert_eq!(
+            content, photo_bytes,
+            "Downloaded file has incorrect content"
+        );
+
+        // Verify the metadata file exists
+        let metadata_path = downloaded_path.with_extension("metadata.txt");
+        assert!(metadata_path.exists(), "Metadata file doesn't exist");
+
+        // Verify the metadata file has the expected content
+        let metadata_content =
+            fs::read_to_string(&metadata_path).expect("Failed to read metadata file");
+        assert!(
+            metadata_content.contains(&post.title),
+            "Metadata doesn't contain post title"
+        );
+        assert!(
+            metadata_content.contains(&post.author),
+            "Metadata doesn't contain post author"
+        );
+        assert!(
+            metadata_content.contains(&post.date),
+            "Metadata doesn't contain post date"
+        );
+    });
+}
+
+#[test]
+fn test_download_all_photos() {
+    with_isolated_env(|| {
+        // Create a mock server
+        let mut server = mockito::Server::new();
+
+        // Mock the login flow for authentication
+        let signin_html = r#"<!DOCTYPE html><html><head><meta name="csrf-token" content="token" /></head><body></body></html>"#;
+        let _signin_get_mock = server
+            .mock("GET", "/souls/sign_in")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(signin_html)
+            .create();
+
+        let _signin_post_mock = server
+            .mock("POST", "/souls/sign_in")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body("<!DOCTYPE html><html><body><h1>Dashboard</h1></body></html>")
+            .create();
+
+        // Mock multiple photo URLs
+        let photo_paths = ["/uploads/photos/123.jpg", "/uploads/photos/456.jpg"];
+        let photo_bytes = b"FAKE_IMAGE_DATA_FOR_TESTING";
+
+        // Create mocks for each photo path
+        let _photo1_mock = server
+            .mock("GET", photo_paths[0])
+            .with_status(200)
+            .with_header("content-type", "image/jpeg")
+            .with_body(photo_bytes.as_slice())
+            .create();
+
+        let _photo2_mock = server
+            .mock("GET", photo_paths[1])
+            .with_status(200)
+            .with_header("content-type", "image/jpeg")
+            .with_body(photo_bytes.as_slice())
+            .create();
+
+        // Create the client with mockito server URL
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Log in first
+        client.login().expect("Login failed");
+
+        // Create a temporary directory to store downloaded photos
+        let temp_dir = TempDir::new().expect("Failed to create temporary directory for photos");
+        let output_dir = temp_dir.path();
+
+        // Create a test post with multiple photo URLs
+        let post = Post {
+            id: "multi-photo-123".to_string(),
+            title: "Post with Multiple Photos".to_string(),
+            author: "Test Author".to_string(),
+            date: "Jan 20, 2023".to_string(),
+            url: format!("{}/posts/123", server.url()),
+            photo_urls: photo_paths
+                .iter()
+                .map(|path| format!("{}{}", server.url(), path))
+                .collect(),
+        };
+
+        // Download all photos
+        let result = client.download_all_photos(&post, output_dir);
+
+        // Verify the download succeeded
+        assert!(result.is_ok(), "Photo downloads failed: {:?}", result.err());
+
+        // Verify we got back paths for all photos
+        let downloaded_paths = result.unwrap();
+        assert_eq!(
+            downloaded_paths.len(),
+            photo_paths.len(),
+            "Expected {} photos, got {}",
+            photo_paths.len(),
+            downloaded_paths.len()
+        );
+
+        // Verify all files exist
+        for path in &downloaded_paths {
+            assert!(
+                path.exists(),
+                "Downloaded file doesn't exist: {}",
+                path.display()
+            );
+
+            // Verify the file has the correct content
+            let content = fs::read(path).expect("Failed to read downloaded file");
+            assert_eq!(
+                content, photo_bytes,
+                "Downloaded file has incorrect content"
+            );
+
+            // Verify the metadata file exists
+            let metadata_path = path.with_extension("metadata.txt");
+            assert!(
+                metadata_path.exists(),
+                "Metadata file doesn't exist for {}",
+                path.display()
+            );
+        }
     });
 }
