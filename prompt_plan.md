@@ -233,7 +233,7 @@ Provide complete updated code for `client.rs` and `client_test.rs`.
 
 ---
 
-### **Prompt A6**: *Caching with JSON on Disk*
+### **Prompt A6**: *Caching with JSON on Disk* (COMPLETED)
 
 ```
 Next, we add caching.
