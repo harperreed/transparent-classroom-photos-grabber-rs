@@ -209,7 +209,7 @@ For now, just check that creating the `Client` doesn’t panic.
 
 ---
 
-### **Prompt A5**: *Login Flow (GET & POST with CSRF)*
+### **Prompt A5**: *Login Flow (GET & POST with CSRF)* (COMPLETED)
 
 ```
 Now we implement the login flow.
