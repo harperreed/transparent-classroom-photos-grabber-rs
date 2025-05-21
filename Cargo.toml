@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation to download photos from Transparent Classroom"
+default-run = "main"
 
 [dependencies]
 dotenv = "0.15.0"
