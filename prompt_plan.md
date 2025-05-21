@@ -136,10 +136,10 @@ Below is a fictional example of how you might provide prompts to a code-generati
 
 ---
 
-### **Prompt A1**: *Initialize Cargo Project and Basic Tests*
+### **Prompt A1**: *Initialize Cargo Project and Basic Tests* (COMPLETED)
 
 ```
-You are an AI coding assistant. We are building a Rust project called "transparent-classroom-grabber". 
+You are an AI coding assistant. We are building a Rust project called "transparent-classroom-grabber".
 First, create a new Cargo library project with the following files:
 
 1. Cargo.toml
@@ -148,7 +148,7 @@ First, create a new Cargo library project with the following files:
 
 The library should compile and pass a trivial test in `tests/smoke_test.rs`.
 
-Please provide the complete file contents, with any necessary placeholders (like version, authors, etc.). 
+Please provide the complete file contents, with any necessary placeholders (like version, authors, etc.).
 Use the 2021 edition of Rust and no default features.
 ```
 
@@ -157,20 +157,20 @@ Use the 2021 edition of Rust and no default features.
 ### **Prompt A2**: *Config Module & Tests*
 
 ```
-We have a Rust project with a library. Now add a new file `src/config.rs` that defines a `Config` struct. 
+We have a Rust project with a library. Now add a new file `src/config.rs` that defines a `Config` struct.
 It should have:
 - `email: String`
 - `password: String`
 - `school_id: u32`
 - `child_id: u32`
 
-We want to load these from environment variables `TC_EMAIL`, `TC_PASSWORD`, `SCHOOL`, and `CHILD`. 
-If they are missing, return an error. 
-Use `dotenv` and `std::env::var`. 
+We want to load these from environment variables `TC_EMAIL`, `TC_PASSWORD`, `SCHOOL`, and `CHILD`.
+If they are missing, return an error.
+Use `dotenv` and `std::env::var`.
 Define a function `Config::from_env() -> Result<Self, ConfigError>` that loads them.
 
 Then, in `tests/config_test.rs`, write unit tests that check:
-1) We can load a valid config from environment variables. 
+1) We can load a valid config from environment variables.
 2) Missing environment variable triggers an error.
 
 Provide the full code for `src/config.rs`, the `ConfigError`, plus the tests in `tests/config_test.rs`.
@@ -181,13 +181,13 @@ Provide the full code for `src/config.rs`, the `ConfigError`, plus the tests in 
 ### **Prompt A3**: *Logging & Error Handling*
 
 ```
-We have our project with a `Config` struct. Now we want to add logging and an error type for the whole app. 
+We have our project with a `Config` struct. Now we want to add logging and an error type for the whole app.
 1) Create `src/error.rs` with a custom enum `AppError` using `thiserror`.
-2) Integrate logging via `env_logger` in `lib.rs`’s `init()` function, which we’ll call from tests or main. 
+2) Integrate logging via `env_logger` in `lib.rs`’s `init()` function, which we’ll call from tests or main.
    - `init()` should just initialize `env_logger` once.
 3) Modify the `Config::from_env()` function to return `AppError` instead of `ConfigError`.
 
-Update any references to `ConfigError` in `tests/config_test.rs`. 
+Update any references to `ConfigError` in `tests/config_test.rs`.
 Show all changed files.
 ```
 
@@ -200,11 +200,11 @@ We have config and logging in place. Next, create a new file `src/client.rs` wit
 - A `reqwest::blocking::Client`
 - A reference to our `Config`
 
-Create a constructor `Client::new(config: Config) -> Self`. 
+Create a constructor `Client::new(config: Config) -> Self`.
 In that constructor, build a `reqwest::blocking::Client` that uses a cookie store.
 
-In `tests/client_test.rs`, write tests to confirm we can instantiate `Client`. 
-For now, just check that creating the `Client` doesn’t panic. 
+In `tests/client_test.rs`, write tests to confirm we can instantiate `Client`.
+For now, just check that creating the `Client` doesn’t panic.
 ```
 
 ---
@@ -212,7 +212,7 @@ For now, just check that creating the `Client` doesn’t panic.
 ### **Prompt A5**: *Login Flow (GET & POST with CSRF)*
 
 ```
-Now we implement the login flow. 
+Now we implement the login flow.
 In `src/client.rs`, add:
 1) A method `fn login(&self) -> Result<(), AppError>`.
 2) It should:
@@ -221,11 +221,11 @@ In `src/client.rs`, add:
    - POST credentials + token to the same page
    - Return an error if login appears to fail.
 
-Add a new test in `tests/client_test.rs` that mocks or fakes the sign_in page. 
-We can do that with the `mockito` crate. 
+Add a new test in `tests/client_test.rs` that mocks or fakes the sign_in page.
+We can do that with the `mockito` crate.
 Implement the test so that it expects:
    - GET to `/souls/sign_in`, returns a page with a token
-   - POST to the same endpoint, returns success 
+   - POST to the same endpoint, returns success
    - We confirm `login()` returns `Ok(())`
 
 Provide complete updated code for `client.rs` and `client_test.rs`.
@@ -236,7 +236,7 @@ Provide complete updated code for `client.rs` and `client_test.rs`.
 ### **Prompt A6**: *Caching with JSON on Disk*
 
 ```
-Next, we add caching. 
+Next, we add caching.
 Create `src/cache.rs` with:
 - A function `read_cache(path: &Path) -> Result<Option<CacheData>, AppError>`
 - A function `write_cache(path: &Path, data: &CacheData) -> Result<(), AppError>`
@@ -245,7 +245,7 @@ Create `src/cache.rs` with:
    - `timestamp: SystemTime` (when it was written)
    - `payload: Vec<Post>` (just an example structure for storing posts)
 
-Include logic to skip loading if the cache is expired (older than some threshold from config). 
+Include logic to skip loading if the cache is expired (older than some threshold from config).
 Add unit tests in `tests/cache_test.rs` that confirm:
    - Writing + reading works
    - Expired cache returns `Ok(None)`
@@ -259,9 +259,9 @@ Show full code for `cache.rs`, `cache_test.rs`, plus any changes to your error t
 
 ```
 In `src/client.rs`, add:
-- `fn get_posts(&self, page: u32) -> Result<Vec<Post>, AppError>` 
+- `fn get_posts(&self, page: u32) -> Result<Vec<Post>, AppError>`
    - Make an HTTP GET request to the Transparent Classroom endpoint, parse JSON, return a vector of `Post`.
-   - If needed, parse HTML if the endpoint returns HTML, or just parse JSON if it returns JSON. 
+   - If needed, parse HTML if the endpoint returns HTML, or just parse JSON if it returns JSON.
    - For now, just return an empty vector or a mocked example.
 
 Add a new test in `tests/client_test.rs`:
@@ -269,7 +269,7 @@ Add a new test in `tests/client_test.rs`:
 - Returns sample JSON with a couple of “Post” items
 - Confirms `get_posts()` returns them
 
-For HTML parsing, if you need to parse HTML from the response, use the `scraper` crate. 
+For HTML parsing, if you need to parse HTML from the response, use the `scraper` crate.
 Show all relevant code.
 ```
 
@@ -306,4 +306,3 @@ Show all changed or new files, ensuring the entire application can now be run en
 ## 5. Final Note
 
 With this structure, each **Prompt** represents a small deliverable for the LLM to generate code. You test it, refine if necessary, then move on to the next prompt. This ensures no orphaned code and keeps the project in a consistently buildable and testable state.
-
