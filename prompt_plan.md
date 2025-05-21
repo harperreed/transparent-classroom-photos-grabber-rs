@@ -255,7 +255,7 @@ Show full code for `cache.rs`, `cache_test.rs`, plus any changes to your error t
 
 ---
 
-### **Prompt A7**: *Crawling & HTML Parsing*
+### **Prompt A7**: *Crawling & HTML Parsing* (COMPLETED)
 
 ```
 In `src/client.rs`, add:
