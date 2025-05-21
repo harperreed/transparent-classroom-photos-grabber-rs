@@ -1,4 +1,4 @@
-use transparent_classroom_photos_grabber_rs::{config::Config, error::AppError};
+use transparent_classroom_photos_grabber_rs::error::AppError;
 
 // Simple test that verifies our logging setup works
 #[test]

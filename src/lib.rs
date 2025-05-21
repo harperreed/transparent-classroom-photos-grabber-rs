@@ -3,6 +3,7 @@
 
 use std::sync::Once;
 
+pub mod client;
 pub mod config;
 pub mod error;
 

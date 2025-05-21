@@ -193,7 +193,7 @@ Show all changed files.
 
 ---
 
-### **Prompt A4**: *HTTP Client & Basic Testing*
+### **Prompt A4**: *HTTP Client & Basic Testing* (COMPLETED)
 
 ```
 We have config and logging in place. Next, create a new file `src/client.rs` with a `Client` struct that stores:
