@@ -6,3 +6,12 @@ authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation to download photos from Transparent Classroom"
 
 [dependencies]
+dotenv = "0.15.0"
+thiserror = "1.0.52"
+serde = { version = "1.0.193", features = ["derive"] }
+serde_json = "1.0.108"
+log = "0.4.20"
+env_logger = "0.10.1"
+
+[dev-dependencies]
+tempfile = "3.10.1"

@@ -178,7 +178,7 @@ Provide the full code for `src/config.rs`, the `ConfigError`, plus the tests in 
 
 ---
 
-### **Prompt A3**: *Logging & Error Handling*
+### **Prompt A3**: *Logging & Error Handling* (COMPLETED)
 
 ```
 We have our project with a `Config` struct. Now we want to add logging and an error type for the whole app.
