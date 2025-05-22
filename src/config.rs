@@ -3,12 +3,15 @@
 
 use dotenv::dotenv;
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub email: String,
     pub password: String,
@@ -32,9 +35,39 @@ pub enum ConfigError {
 
     #[error("Environment error: {0}")]
     EnvError(#[from] env::VarError),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Config file error: {0}")]
+    ConfigFileError(#[from] serde_yaml::Error),
+
+    #[error("Config file not found")]
+    ConfigFileNotFound,
 }
 
 impl Config {
+    /// Load configuration from multiple sources in order of priority:
+    /// 1. Environment variables
+    /// 2. Config file
+    /// 3. .env file
+    pub fn load() -> Result<Self, AppError> {
+        // Try environment variables first
+        if let Ok(config) = Self::from_env_with_dotenv(false) {
+            debug!("Loaded configuration from environment variables");
+            return Ok(config);
+        }
+
+        // Try config file
+        if let Ok(config) = Self::from_file() {
+            debug!("Loaded configuration from config file");
+            return Ok(config);
+        }
+
+        // Fallback to .env file
+        Self::from_env_with_dotenv(true).map_err(AppError::Config)
+    }
+
     /// Load configuration from environment variables
     ///
     /// If environment variables are not set, attempts to load from .env file
@@ -110,6 +143,119 @@ impl Config {
         };
 
         debug!("Configuration loaded successfully");
+        Ok(config)
+    }
+
+    /// Get the standard config file path for the current platform
+    pub fn get_config_file_path() -> Result<PathBuf, ConfigError> {
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            ConfigError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not find config directory",
+            ))
+        })?;
+
+        Ok(config_dir
+            .join("transparent-classroom-photos-grabber")
+            .join("config.yaml"))
+    }
+
+    /// Load configuration from config file
+    pub fn from_file() -> Result<Self, ConfigError> {
+        let config_path = Self::get_config_file_path()?;
+        Self::from_file_path(&config_path)
+    }
+
+    /// Load configuration from a specific file path
+    pub fn from_file_path(path: &Path) -> Result<Self, ConfigError> {
+        if !path.exists() {
+            return Err(ConfigError::ConfigFileNotFound);
+        }
+
+        let content = fs::read_to_string(path)?;
+        let config: Config = serde_yaml::from_str(&content)?;
+        debug!("Configuration loaded from file: {}", path.display());
+        Ok(config)
+    }
+
+    /// Save configuration to config file
+    pub fn save_to_file(&self) -> Result<(), ConfigError> {
+        let config_path = Self::get_config_file_path()?;
+        self.save_to_file_path(&config_path)
+    }
+
+    /// Save configuration to a specific file path
+    pub fn save_to_file_path(&self, path: &Path) -> Result<(), ConfigError> {
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = serde_yaml::to_string(self)?;
+        fs::write(path, content)?;
+        debug!("Configuration saved to file: {}", path.display());
+        Ok(())
+    }
+
+    /// Interactive setup of configuration
+    pub fn interactive_setup() -> Result<Self, ConfigError> {
+        use dialoguer::{Input, Password};
+
+        println!("📋 Setting up Transparent Classroom Photos Grabber configuration");
+        println!();
+
+        let email: String = Input::new()
+            .with_prompt("Email")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let password: String = Password::new()
+            .with_prompt("Password")
+            .interact()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let school_id: u32 = Input::new()
+            .with_prompt("School ID")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let child_id: u32 = Input::new()
+            .with_prompt("Child ID")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let school_lat: f64 = Input::new()
+            .with_prompt("School Latitude")
+            .with_initial_text("0.0")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let school_lng: f64 = Input::new()
+            .with_prompt("School Longitude")
+            .with_initial_text("0.0")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let school_keywords: String = Input::new()
+            .with_prompt("School Keywords")
+            .with_initial_text("")
+            .interact_text()
+            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        let config = Config {
+            email,
+            password,
+            school_id,
+            child_id,
+            school_lat,
+            school_lng,
+            school_keywords,
+        };
+
+        // Save the configuration
+        config.save_to_file()?;
+        println!("✅ Configuration saved successfully!");
+
         Ok(config)
     }
 }

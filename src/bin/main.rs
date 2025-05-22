@@ -1,36 +1,35 @@
 // ABOUTME: Main executable for the Transparent Classroom Photos Grabber
-// ABOUTME: Provides CLI interface for downloading photos
+// ABOUTME: Provides CLI interface for downloading photos with setup and configuration options
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
+use clap::Parser;
 use colored::*;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, error, info};
-use transparent_classroom_photos_grabber_rs::{client::Client, config::Config, error::AppError};
+use transparent_classroom_photos_grabber_rs::{
+    cli::{Cli, Commands},
+    client::Client,
+    config::Config,
+    error::AppError,
+};
 
 fn main() {
     // Initialize the library (sets up logging)
     transparent_classroom_photos_grabber_rs::init();
 
     // Parse command-line arguments
-    let args: Vec<String> = env::args().collect();
-    if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
-        print_usage();
-        return;
+    let cli = Cli::parse();
+
+    // Set log level based on verbose flag
+    if cli.verbose {
+        std::env::set_var("RUST_LOG", "debug");
     }
 
-    // Get the output directory from args or use default
-    let output_dir = if args.len() > 1 {
-        PathBuf::from(&args[1])
-    } else {
-        PathBuf::from("./photos")
-    };
-
     // Run the application
-    if let Err(e) = run(output_dir) {
+    if let Err(e) = run(cli) {
         error!("Application error: {}", e);
         println!();
         println!("{} {}", "❌".red(), "Error:".bright_red().bold());
@@ -40,62 +39,170 @@ fn main() {
     }
 }
 
-fn print_usage() {
-    println!(
-        "{}",
-        "📸 Transparent Classroom Photos Grabber"
-            .bright_cyan()
-            .bold()
-    );
-    println!(
-        "{} {}",
-        "Usage:".bright_yellow(),
-        "transparent-classroom-photos-grabber [OUTPUT_DIR]".white()
-    );
-    println!();
-    println!(
-        "{}",
-        "If OUTPUT_DIR is not provided, photos will be saved to './photos'".dimmed()
-    );
-    println!();
-    println!("{}:", "Environment variables".bright_yellow());
-    println!(
-        "  {} - Your Transparent Classroom email",
-        "TC_EMAIL    ".bright_green()
-    );
-    println!(
-        "  {} - Your Transparent Classroom password",
-        "TC_PASSWORD ".bright_green()
-    );
-    println!("  {} - Your school ID", "SCHOOL      ".bright_green());
-    println!("  {} - Your child ID", "CHILD       ".bright_green());
-    println!();
-    println!("{}:", "Example".bright_yellow());
-    println!("  {}", "export TC_EMAIL=yourname@example.com".cyan());
-    println!("  {}", "export TC_PASSWORD=yourpassword".cyan());
-    println!("  {}", "export SCHOOL=12345".cyan());
-    println!("  {}", "export CHILD=67890".cyan());
-    println!(
-        "  {}",
-        "transparent-classroom-photos-grabber ./my-photos".cyan()
-    );
+fn run(cli: Cli) -> Result<(), AppError> {
+    match cli.command {
+        Some(Commands::Setup(setup_args)) => handle_setup(setup_args),
+        Some(Commands::Download(download_args)) => handle_download(
+            download_args.output.or(cli.output),
+            download_args.dry_run || cli.dry_run,
+        ),
+        Some(Commands::Config(config_args)) => handle_config(config_args),
+        None => handle_download(cli.output, cli.dry_run),
+    }
 }
 
-fn run(output_dir: PathBuf) -> Result<(), AppError> {
-    // Print header
+fn handle_setup(
+    args: transparent_classroom_photos_grabber_rs::cli::SetupArgs,
+) -> Result<(), AppError> {
     println!();
     println!(
         "{}",
-        "🚀 Starting Transparent Classroom Photos Grabber"
+        "🛠️  Transparent Classroom Photos Grabber Setup"
             .bright_cyan()
             .bold()
     );
     println!("{}", "─".repeat(50).dimmed());
 
-    // Load configuration from environment
+    // Check if config already exists
+    if let Ok(config_path) = Config::get_config_file_path() {
+        if config_path.exists() && !args.force {
+            println!();
+            println!(
+                "{} {}",
+                "ℹ️".blue(),
+                "Configuration already exists!".yellow()
+            );
+            println!(
+                "{} {} {}",
+                "📄".blue(),
+                "Location:".bright_blue(),
+                config_path.display().to_string().bright_white()
+            );
+            println!();
+            println!(
+                "{}",
+                "Use --force to overwrite existing configuration".dimmed()
+            );
+            return Ok(());
+        }
+    }
+
+    // Run interactive setup
+    let _config = Config::interactive_setup().map_err(AppError::Config)?;
+
+    println!();
+    println!("{}", "─".repeat(50).dimmed());
+    println!(
+        "{} {}",
+        "🎉".green(),
+        "Setup Complete!".bright_green().bold()
+    );
+    println!();
+    println!("You can now run the application to download photos:");
+    println!("  {}", "tc-photos-grabber".cyan());
+    println!("{}", "─".repeat(50).dimmed());
+
+    Ok(())
+}
+
+fn handle_config(
+    args: transparent_classroom_photos_grabber_rs::cli::ConfigArgs,
+) -> Result<(), AppError> {
+    if args.path {
+        match Config::get_config_file_path() {
+            Ok(path) => {
+                println!("{}", path.display());
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(AppError::Config(e));
+            }
+        }
+    }
+
+    // Show current configuration
+    println!();
+    println!("{}", "📋 Current Configuration".bright_cyan().bold());
+    println!("{}", "─".repeat(50).dimmed());
+
+    match Config::load() {
+        Ok(config) => {
+            println!("{} {}", "Email:".bright_blue(), config.email.bright_white());
+            println!(
+                "{} {}",
+                "School ID:".bright_blue(),
+                config.school_id.to_string().bright_white()
+            );
+            println!(
+                "{} {}",
+                "Child ID:".bright_blue(),
+                config.child_id.to_string().bright_white()
+            );
+            println!(
+                "{} {}",
+                "School Lat:".bright_blue(),
+                config.school_lat.to_string().bright_white()
+            );
+            println!(
+                "{} {}",
+                "School Lng:".bright_blue(),
+                config.school_lng.to_string().bright_white()
+            );
+            println!(
+                "{} {}",
+                "School Keywords:".bright_blue(),
+                config.school_keywords.bright_white()
+            );
+
+            if let Ok(config_path) = Config::get_config_file_path() {
+                println!();
+                println!(
+                    "{} {}",
+                    "Config file:".bright_blue(),
+                    config_path.display().to_string().bright_white()
+                );
+            }
+        }
+        Err(e) => {
+            println!("{} {}", "❌".red(), "No configuration found".red());
+            println!("{}", e.to_string().dimmed());
+            println!();
+            println!("Run setup to create configuration:");
+            println!("  {}", "tc-photos-grabber setup".cyan());
+        }
+    }
+
+    println!("{}", "─".repeat(50).dimmed());
+    Ok(())
+}
+
+fn handle_download(output_dir: Option<PathBuf>, dry_run: bool) -> Result<(), AppError> {
+    // Print header
+    println!();
+    if dry_run {
+        println!(
+            "{}",
+            "🧪 Transparent Classroom Photos Grabber (Dry Run)"
+                .bright_yellow()
+                .bold()
+        );
+    } else {
+        println!(
+            "{}",
+            "🚀 Transparent Classroom Photos Grabber"
+                .bright_cyan()
+                .bold()
+        );
+    }
+    println!("{}", "─".repeat(50).dimmed());
+
+    // Get the output directory from args or use default
+    let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("./photos"));
+
+    // Load configuration from multiple sources
     let spinner = create_spinner("🔧 Loading configuration...");
-    info!("Loading configuration from environment");
-    let config = Config::from_env()?;
+    info!("Loading configuration");
+    let config = Config::load()?;
     debug!("Loaded configuration with school ID: {}", config.school_id);
     spinner.finish_with_message(format!(
         "{} {}",
@@ -140,6 +247,39 @@ fn run(output_dir: PathBuf) -> Result<(), AppError> {
         "Found".bright_blue(),
         format!("{} posts", posts.len()).bright_white().bold()
     );
+
+    if dry_run {
+        println!();
+        println!(
+            "{} {}",
+            "🧪".yellow(),
+            "DRY RUN MODE - No files will be downloaded"
+                .bright_yellow()
+                .bold()
+        );
+        println!();
+
+        for (i, post) in posts.iter().enumerate() {
+            println!(
+                "{} {} {} {}",
+                "📄".blue(),
+                format!("[{}/{}]", i + 1, posts.len()).bright_white().bold(),
+                truncate_title(&post.title, 50).bright_white(),
+                format!("({} photos)", post.photo_urls.len()).dimmed()
+            );
+        }
+
+        let total_photos: usize = posts.iter().map(|p| p.photo_urls.len()).sum();
+        println!();
+        println!("{} {}", "📊".blue(), "Summary:".bright_blue());
+        println!(
+            "  Would download {} photos from {} posts",
+            total_photos,
+            posts.len()
+        );
+        println!("  Would save to: {}", output_dir.display());
+        return Ok(());
+    }
 
     // Create the output directory if it doesn't exist
     if !output_dir.exists() {
@@ -327,28 +467,6 @@ fn download_photos_with_progress(
     for i in 0..post.photo_urls.len() {
         progress_bar.set_position((i + 1) as u64);
         std::thread::sleep(Duration::from_millis(10)); // Small delay to show progress
-    }
-
-    result
-}
-
-// Helper function to sanitize directory names
-#[allow(dead_code)]
-fn sanitize_dirname(input: &str) -> String {
-    let mut result = input.trim().to_owned();
-
-    // Replace spaces with underscores
-    result = result.replace(' ', "_");
-
-    // Remove characters that are problematic in directory names
-    result = result.replace(
-        &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\''][..],
-        "",
-    );
-
-    // Truncate if too long
-    if result.len() > 30 {
-        result.truncate(30);
     }
 
     result
