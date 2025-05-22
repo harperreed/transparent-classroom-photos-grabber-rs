@@ -1,206 +1,258 @@
-I'll carefully analyze the code to identify missing test cases for the transparent-classroom-photos-grabber-rs project. Looking at the existing code and tests, I'll identify gaps in test coverage that should be addressed.
+I'll review the codebase to identify missing test cases for the transparent-classroom-photos-grabber-rs project. Let me analyze the code and create a comprehensive list of missing tests that should be implemented.
 
-## Missing Test Cases
+# Missing Test Cases for transparent-classroom-photos-grabber-rs
 
-### Issue 1: Missing Tests for `sanitize_dirname` in bin/main.rs
+## Issue 1: Missing Tests for Error Case in `parse_posts_json`
+
+The `parse_posts_json` method in `src/client.rs` has a potential memory leak with `Box::leak` and lacks tests for various error conditions.
 
 ```markdown
-## Missing Tests for `sanitize_dirname` in bin/main.rs
-
-The `sanitize_dirname` function in `src/bin/main.rs` is critical for creating safe directory names for downloaded photos, but it lacks dedicated tests.
+### Description:
+The `parse_posts_json` method extracts post data from JSON responses, but currently lacks tests for error conditions and edge cases.
 
 ### What to Test:
-- Test that spaces are correctly replaced with underscores
-- Test that illegal characters (/, \, :, *, ?, ", <, >, |, ') are stripped
-- Test that long names are properly truncated to 30 characters
-- Test with empty strings and strings containing only illegal characters
-- Test with edge cases like Unicode characters and emojis
+- Test with malformed JSON
+- Test with empty JSON array
+- Test with missing required fields
+- Test with numeric IDs vs string IDs (to verify Box::leak behavior)
+- Test with different JSON structures (nested posts in "posts" vs "data" fields)
 
 ### Implementation Example:
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[test]
+fn test_parse_posts_json_malformed() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
 
-    #[test]
-    fn test_sanitize_dirname_spaces() {
-        assert_eq!(sanitize_dirname("test name"), "test_name");
-        assert_eq!(sanitize_dirname("  leading trailing  "), "leading_trailing");
-    }
-
-    #[test]
-    fn test_sanitize_dirname_illegal_chars() {
-        assert_eq!(sanitize_dirname("file/name:with*illegal?chars"), "filenamewithlegalchars");
-        assert_eq!(sanitize_dirname("\"quotes'and<other>|chars\\"), "quotesandotherchars");
-    }
-
-    #[test]
-    fn test_sanitize_dirname_length() {
-        let long_name = "This is a very long directory name that should be truncated to thirty characters only";
-        let result = sanitize_dirname(long_name);
-        assert_eq!(result.len(), 30);
-        assert_eq!(result, "This_is_a_very_long_directory_");
-    }
-
-    #[test]
-    fn test_sanitize_dirname_edge_cases() {
-        assert_eq!(sanitize_dirname(""), "");
-        assert_eq!(sanitize_dirname("/:*?\"<>|'"), "");
-        // Test with Unicode
-        assert_eq!(sanitize_dirname("café"), "café");
-    }
+        let malformed_json = r#"{"this is not valid json"#;
+        let result = client.parse_posts_json(malformed_json);
+        assert!(result.is_err());
+        match result {
+            Err(AppError::Parse(msg)) => {
+                assert!(msg.contains("Failed to parse JSON response"));
+            }
+            _ => panic!("Expected Parse error for malformed JSON"),
+        }
+    });
 }
-```
-```
 
-### Issue 2: Missing Tests for `run` Function in main.rs
+#[test]
+fn test_parse_posts_json_empty_array() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
 
-```markdown
-## Missing Tests for `run` Function in bin/main.rs
-
-The `run` function in `src/bin/main.rs` is the main workflow coordinator but lacks integration tests.
-
-### What to Test:
-- Test successful execution with valid configuration and mocked API responses
-- Test handling of empty posts (no photos to download)
-- Test handling of API errors during post fetching
-- Test error handling during photo downloads
-- Test directory creation for output
-
-### Implementation Example:
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mockito::Matcher;
-    use std::path::PathBuf;
-    use tempfile::TempDir;
-    use transparent_classroom_photos_grabber_rs::{client::Post, config::Config};
-
-    // Helper to set up environment for testing
-    fn setup_test_env() -> (mockito::Server, PathBuf) {
-        let server = mockito::Server::new();
-        let temp_dir = TempDir::new().unwrap();
-
-        // Set up env vars to point to mock server
-        std::env::set_var("TC_EMAIL", "test@example.com");
-        std::env::set_var("TC_PASSWORD", "password123");
-        std::env::set_var("SCHOOL", "12345");
-        std::env::set_var("CHILD", "67890");
-
-        (server, temp_dir.path().to_path_buf())
-    }
-
-    #[test]
-    fn test_run_successful_flow() {
-        let (mut server, output_dir) = setup_test_env();
-
-        // Mock login endpoint
-        let _signin_mock = server.mock("GET", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><head><meta name="csrf-token" content="token" /></head></html>"#)
-            .create();
-
-        let _signin_post_mock = server.mock("POST", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><body><h1>Dashboard</h1></body></html>"#)
-            .create();
-
-        // Mock posts endpoint
-        let _posts_mock = server.mock("GET", "/observations")
-            .with_status(200)
-            .with_body(r#"<html><body>
-                <div class="observation" id="obs-123">
-                    <div class="observation-text">Test Post</div>
-                    <div class="observation-author">Author</div>
-                    <div class="observation-date">2023-01-01</div>
-                    <a class="observation-link" href="/observations/123">View</a>
-                    <div class="observation-photo">
-                        <img src="/uploads/photo1.jpg">
-                    </div>
-                </div>
-            </body></html>"#)
-            .create();
-
-        // Mock photo download
-        let _photo_mock = server.mock("GET", "/uploads/photo1.jpg")
-            .with_status(200)
-            .with_body("test photo data")
-            .create();
-
-        // Test the run function
-        let result = run(output_dir);
+        let empty_json = r#"[]"#;
+        let result = client.parse_posts_json(empty_json);
         assert!(result.is_ok());
-    }
+        assert!(result.unwrap().is_empty());
+    });
+}
 
-    #[test]
-    fn test_run_no_posts() {
-        let (mut server, output_dir) = setup_test_env();
+#[test]
+fn test_parse_posts_json_numeric_id() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // Mock login endpoints
-        let _signin_mock = server.mock("GET", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><head><meta name="csrf-token" content="token" /></head></html>"#)
-            .create();
+        // Test with numeric ID to verify Box::leak behavior
+        let json_with_numeric_id = r#"[
+            {"id": 12345, "normalized_text": "Test Post", "author": "Test Author", "date": "2023-01-01"}
+        ]"#;
 
-        let _signin_post_mock = server.mock("POST", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><body><h1>Dashboard</h1></body></html>"#)
-            .create();
+        let result = client.parse_posts_json(json_with_numeric_id);
+        assert!(result.is_ok());
+        let posts = result.unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].id, "12345");
+    });
+}
 
-        // Mock empty posts response
-        let _posts_mock = server.mock("GET", "/observations")
-            .with_status(200)
-            .with_body(r#"<html><body><div class="observations-container"></div></body></html>"#)
-            .create();
+#[test]
+fn test_parse_posts_json_different_structures() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // Test the run function
-        let result = run(output_dir);
-        assert!(result.is_ok()); // Should succeed but with no posts
-    }
+        // Test with posts in "posts" field
+        let json_with_posts_field = r#"{"posts": [
+            {"id": "post1", "normalized_text": "Test Post 1", "author": "Test Author 1", "date": "2023-01-01"}
+        ]}"#;
 
-    #[test]
-    fn test_run_api_error() {
-        let (mut server, output_dir) = setup_test_env();
+        let result = client.parse_posts_json(json_with_posts_field);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
 
-        // Mock login endpoints
-        let _signin_mock = server.mock("GET", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><head><meta name="csrf-token" content="token" /></head></html>"#)
-            .create();
+        // Test with posts in "data" field
+        let json_with_data_field = r#"{"data": [
+            {"id": "post2", "normalized_text": "Test Post 2", "author": "Test Author 2", "date": "2023-01-02"}
+        ]}"#;
 
-        let _signin_post_mock = server.mock("POST", "/souls/sign_in")
-            .with_status(200)
-            .with_body(r#"<html><body><h1>Dashboard</h1></body></html>"#)
-            .create();
-
-        // Mock failed posts response
-        let _posts_mock = server.mock("GET", "/observations")
-            .with_status(500)
-            .with_body("Server error")
-            .create();
-
-        // Test the run function
-        let result = run(output_dir);
-        assert!(result.is_err()); // Should fail due to API error
-    }
+        let result = client.parse_posts_json(json_with_data_field);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    });
 }
 ```
 ```
 
-### Issue 3: Missing Tests for `sanitize_filename` in client.rs
+## Issue 2: Missing Tests for `parse_date_to_timestamp` Method
+
+The `parse_date_to_timestamp` method in `src/client.rs` is untested and handles different date formats.
 
 ```markdown
-## Missing Tests for `sanitize_filename` in client.rs
-
-The `sanitize_filename` function in `src/client.rs` has no corresponding tests.
+### Description:
+The `parse_date_to_timestamp` method is responsible for parsing various date formats for proper file timestamping, but lacks dedicated tests to verify this functionality.
 
 ### What to Test:
-- Test that spaces are correctly replaced with underscores
-- Test that illegal characters (/, \, :, *, ?, ", <, >, |, ') are removed
-- Test that long filenames are properly truncated to 50 characters
-- Test with empty strings and strings with only illegal characters
-- Test with edge cases like Unicode characters
+- Test parsing RFC3339 date format
+- Test parsing YYYY-MM-DD format
+- Test parsing invalid date formats
+- Test handling empty date strings
+
+### Implementation Example:
+```rust
+#[test]
+fn test_parse_date_to_timestamp() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Test RFC3339 format
+        let rfc3339_date = "2023-01-15T12:30:45Z";
+        let timestamp = client.parse_date_to_timestamp(rfc3339_date);
+        assert!(timestamp.is_some());
+
+        // Test YYYY-MM-DD format
+        let simple_date = "2023-01-15";
+        let timestamp = client.parse_date_to_timestamp(simple_date);
+        assert!(timestamp.is_some());
+
+        // Test invalid format
+        let invalid_date = "January 15, 2023";
+        let timestamp = client.parse_date_to_timestamp(invalid_date);
+        assert!(timestamp.is_none());
+
+        // Test empty string
+        let empty_date = "";
+        let timestamp = client.parse_date_to_timestamp(empty_date);
+        assert!(timestamp.is_none());
+    });
+}
+```
+```
+
+## Issue 3: Missing Tests for `discover_endpoints` Method
+
+The `discover_endpoints` method in `src/client.rs` lacks tests to verify its functionality.
+
+```markdown
+### Description:
+The `discover_endpoints` method attempts to discover available endpoints by examining the main school page, but lacks tests to verify this functionality works correctly.
+
+### What to Test:
+- Test with a school page containing observation/event/photo links
+- Test with a school page with no relevant links
+- Test with malformed HTML
+- Test error handling for HTTP failures
+
+### Implementation Example:
+```rust
+#[test]
+fn test_discover_endpoints_with_links() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Mock school page with relevant links
+        let html = r#"<!DOCTYPE html><html><body>
+            <a href="/observations">Observations</a>
+            <a href="/events">Events</a>
+            <a href="/photos">Photos</a>
+            <a href="https://example.com/posts">External Posts</a>
+        </body></html>"#;
+
+        let _mock = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(html)
+            .create();
+
+        let result = client.discover_endpoints();
+        assert!(result.is_ok());
+        let endpoints = result.unwrap();
+        assert!(endpoints.len() >= 4);
+
+        // Check that the endpoints contain our expected links
+        assert!(endpoints.iter().any(|url| url.contains("/observations")));
+        assert!(endpoints.iter().any(|url| url.contains("/events")));
+        assert!(endpoints.iter().any(|url| url.contains("/photos")));
+        assert!(endpoints.iter().any(|url| url.contains("example.com/posts")));
+    });
+}
+
+#[test]
+fn test_discover_endpoints_no_links() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Mock school page with no relevant links
+        let html = r#"<!DOCTYPE html><html><body>
+            <a href="/profile">Profile</a>
+            <a href="/settings">Settings</a>
+        </body></html>"#;
+
+        let _mock = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(html)
+            .create();
+
+        let result = client.discover_endpoints();
+        assert!(result.is_ok());
+        let endpoints = result.unwrap();
+        assert!(endpoints.is_empty());
+    });
+}
+
+#[test]
+fn test_discover_endpoints_http_error() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Mock server error
+        let _mock = server
+            .mock("GET", "/")
+            .with_status(500)
+            .with_body("Server Error")
+            .create();
+
+        let result = client.discover_endpoints();
+        assert!(result.is_err());
+    });
+}
+```
+```
+
+## Issue 4: Missing Tests for `sanitize_filename` Function
+
+The `sanitize_filename` function in `src/client.rs` has no dedicated tests.
+
+```markdown
+### Description:
+The `sanitize_filename` function sanitizes strings for use in filenames, but has no dedicated tests to verify its behavior.
+
+### What to Test:
+- Test replacement of spaces with underscores
+- Test removal of problematic characters (/, \, :, etc.)
+- Test truncation of long filenames
+- Test edge cases (empty strings, strings with only problematic characters)
+- Test Unicode character handling
 
 ### Implementation Example:
 ```rust
@@ -215,13 +267,13 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_filename_illegal_chars() {
+    fn test_sanitize_filename_problematic_chars() {
         assert_eq!(sanitize_filename("file/name:with*illegal?chars"), "filenamewithlegalchars");
         assert_eq!(sanitize_filename("\"quotes'and<other>|chars\\"), "quotesandotherchars");
     }
 
     #[test]
-    fn test_sanitize_filename_length() {
+    fn test_sanitize_filename_truncation() {
         let long_name = "This is a very long filename that should be truncated to fifty characters only because it is too long";
         let result = sanitize_filename(long_name);
         assert_eq!(result.len(), 50);
@@ -232,277 +284,28 @@ mod tests {
     fn test_sanitize_filename_edge_cases() {
         assert_eq!(sanitize_filename(""), "");
         assert_eq!(sanitize_filename("/:*?\"<>|'"), "");
-        // Test with Unicode
+
+        // Test with Unicode characters
         assert_eq!(sanitize_filename("résumé.pdf"), "résumé.pdf");
+        assert_eq!(sanitize_filename("emoji🙂file.txt"), "emoji🙂file.txt");
     }
 }
 ```
 ```
 
-### Issue 4: Missing Tests for Error Handling in `extract_csrf_token`
+## Issue 5: Missing Tests for `embed_metadata` Method
+
+The `embed_metadata` method in `src/client.rs` needs tests to verify metadata is correctly embedded.
 
 ```markdown
-## Missing Tests for Error Handling in `extract_csrf_token`
-
-The `extract_csrf_token` method in `src/client.rs` needs additional tests for error conditions.
-
-### What to Test:
-- Test when HTML doesn't contain a CSRF token
-- Test different HTML structures for token extraction (both meta tag and input field)
-- Test with malformed HTML
-
-### Implementation Example:
-```rust
-#[test]
-fn test_extract_csrf_token_missing() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-
-        // HTML without any CSRF token
-        let html = r#"<!DOCTYPE html><html><head></head><body><form></form></body></html>"#;
-
-        let result = client.extract_csrf_token(html);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("Could not find CSRF token"));
-        }
-    });
-}
-
-#[test]
-fn test_extract_csrf_token_meta_tag() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-
-        // HTML with CSRF token in meta tag
-        let html = r#"<!DOCTYPE html><html><head>
-            <meta name="csrf-token" content="meta-token-value">
-        </head><body></body></html>"#;
-
-        let result = client.extract_csrf_token(html);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "meta-token-value");
-    });
-}
-
-#[test]
-fn test_extract_csrf_token_input_field() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-
-        // HTML with CSRF token in input field
-        let html = r#"<!DOCTYPE html><html><head></head><body>
-            <form>
-                <input name="authenticity_token" value="input-token-value">
-            </form>
-        </body></html>"#;
-
-        let result = client.extract_csrf_token(html);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "input-token-value");
-    });
-}
-
-#[test]
-fn test_extract_csrf_token_malformed_html() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-
-        // Malformed HTML
-        let html = r#"<not-valid-html><meta name="csrf-token" content="token">"#;
-
-        // The HTML parser is quite forgiving, but we should still test with malformed HTML
-        let result = client.extract_csrf_token(html);
-        // Even with malformed HTML, scraper might still find the token
-        if result.is_ok() {
-            assert_eq!(result.unwrap(), "token");
-        } else {
-            assert!(result.unwrap_err().to_string().contains("Could not find CSRF token"));
-        }
-    });
-}
-```
-```
-
-### Issue 5: Missing Tests for Error Cases in `download_photo` and `download_all_photos`
-
-```markdown
-## Missing Tests for Error Cases in Photo Download Methods
-
-The `download_photo` and `download_all_photos` methods in `src/client.rs` need more tests for error conditions.
+### Description:
+The `embed_metadata` method creates metadata files for downloaded photos but lacks tests to verify this functionality.
 
 ### What to Test:
-- Test with empty photo URL list
-- Test with non-existent photo index
-- Test with failed HTTP responses (403, 404, 500, etc.)
-- Test with server timeouts
-- Test with invalid/corrupt image data
-- Test with filesystem permission issues
-
-### Implementation Example:
-```rust
-#[test]
-fn test_download_photo_empty_urls() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-        client.login().expect("Login failed");
-
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let output_dir = temp_dir.path();
-
-        // Create a post with no photo URLs
-        let post = Post {
-            id: "no-photos".to_string(),
-            title: "Post Without Photos".to_string(),
-            author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
-            url: "https://example.com/post".to_string(),
-            photo_urls: vec![],
-        };
-
-        // Try to download a photo
-        let result = client.download_photo(&post, 0, output_dir);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("has no photos"));
-        }
-    });
-}
-
-#[test]
-fn test_download_photo_invalid_index() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-        client.login().expect("Login failed");
-
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let output_dir = temp_dir.path();
-
-        // Create a post with one photo URL
-        let post = Post {
-            id: "one-photo".to_string(),
-            title: "Post With One Photo".to_string(),
-            author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
-            url: "https://example.com/post".to_string(),
-            photo_urls: vec!["https://example.com/photo.jpg".to_string()],
-        };
-
-        // Try to download with invalid index
-        let result = client.download_photo(&post, 1, output_dir);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("out of range"));
-        }
-    });
-}
-
-#[test]
-fn test_download_photo_http_error() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-        client.login().expect("Login failed");
-
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let output_dir = temp_dir.path();
-
-        // Mock a 404 response for the photo URL
-        let photo_path = "/uploads/not-found.jpg";
-        let _photo_mock = server
-            .mock("GET", photo_path)
-            .with_status(404)
-            .with_body("Not Found")
-            .create();
-
-        // Create a post with the photo URL
-        let post = Post {
-            id: "error-photo".to_string(),
-            title: "Post With Error Photo".to_string(),
-            author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
-            url: "https://example.com/post".to_string(),
-            photo_urls: vec![format!("{}{}", server.url(), photo_path)],
-        };
-
-        // Try to download - should fail due to 404
-        let result = client.download_photo(&post, 0, output_dir);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("Failed to download photo"));
-        }
-    });
-}
-
-#[test]
-fn test_download_all_photos_mixed_success() {
-    with_isolated_env(|| {
-        let mut server = mockito::Server::new();
-        let client = create_mock_client(&server).expect("Failed to create mock client");
-        client.login().expect("Login failed");
-
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let output_dir = temp_dir.path();
-
-        // Mock responses - one successful, one failing
-        let photo1_path = "/uploads/photo1.jpg";
-        let photo2_path = "/uploads/photo2.jpg";
-
-        let _photo1_mock = server
-            .mock("GET", photo1_path)
-            .with_status(200)
-            .with_body("test photo data")
-            .create();
-
-        let _photo2_mock = server
-            .mock("GET", photo2_path)
-            .with_status(500)
-            .with_body("Server Error")
-            .create();
-
-        // Create a post with two photo URLs
-        let post = Post {
-            id: "mixed-results".to_string(),
-            title: "Post With Mixed Results".to_string(),
-            author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
-            url: "https://example.com/post".to_string(),
-            photo_urls: vec![
-                format!("{}{}", server.url(), photo1_path),
-                format!("{}{}", server.url(), photo2_path),
-            ],
-        };
-
-        // Should continue even if one photo fails
-        let result = client.download_all_photos(&post, output_dir);
-        assert!(result.is_ok());
-
-        // Should have downloaded only one photo successfully
-        let paths = result.unwrap();
-        assert_eq!(paths.len(), 1);
-    });
-}
-```
-```
-
-### Issue 6: Missing Tests for `embed_metadata` Method
-
-```markdown
-## Missing Tests for `embed_metadata` Method
-
-The `embed_metadata` method in `src/client.rs` lacks direct testing.
-
-### What to Test:
-- Test successful metadata embedding
-- Test with different post data
-- Test with filesystem errors (permission denied, etc.)
-- Verify the content of the metadata file
+- Test successful metadata file creation
+- Test metadata content accuracy
+- Test error handling for filesystem issues
+- Test with various post data formats
 
 ### Implementation Example:
 ```rust
@@ -512,38 +315,44 @@ fn test_embed_metadata_success() {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // Create a temp directory and file
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let photo_path = temp_dir.path().join("test_photo.jpg");
 
-        // Create an empty file
-        std::fs::write(&photo_path, b"test image data").expect("Failed to write test file");
+        // Create a dummy file to represent the photo
+        fs::write(&photo_path, b"dummy image data").expect("Failed to create test photo");
 
         // Create a test post
         let post = Post {
             id: "test-123".to_string(),
             title: "Test Post Title".to_string(),
             author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
+            date: "2023-01-15".to_string(),
             url: "https://example.com/post/123".to_string(),
             photo_urls: vec!["https://example.com/photo.jpg".to_string()],
         };
 
-        // Embed metadata
+        // Call the method
         let result = client.embed_metadata(&post, &photo_path);
+
+        // Verify success
         assert!(result.is_ok());
 
-        // Verify metadata file exists
-        let metadata_path = photo_path.with_extension("metadata.txt");
+        // Check that metadata file was created
+        let metadata_path = photo_path.with_extension("metadata.json");
         assert!(metadata_path.exists());
 
-        // Check metadata content
-        let content = std::fs::read_to_string(&metadata_path).expect("Failed to read metadata");
-        assert!(content.contains(&post.title));
-        assert!(content.contains(&post.author));
-        assert!(content.contains(&post.date));
-        assert!(content.contains(&post.url));
-        assert!(content.contains(&post.id));
+        // Verify content
+        let metadata_content = fs::read_to_string(metadata_path).expect("Failed to read metadata file");
+        let metadata: serde_json::Value = serde_json::from_str(&metadata_content).expect("Failed to parse metadata JSON");
+
+        assert_eq!(metadata["title"], "Test Post Title");
+        assert_eq!(metadata["author"], "Test Author");
+        assert_eq!(metadata["date"], "2023-01-15");
+        assert_eq!(metadata["url"], "https://example.com/post/123");
+        assert_eq!(metadata["post_id"], "test-123");
+        assert_eq!(metadata["school_location"]["latitude"], 41.9032776);
+        assert_eq!(metadata["school_location"]["longitude"], -87.6663027);
     });
 }
 
@@ -553,131 +362,456 @@ fn test_embed_metadata_filesystem_error() {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // Create a temp directory but make a path to a directory (not a file)
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let photo_dir = temp_dir.path().join("photo_dir");
-        std::fs::create_dir(&photo_dir).expect("Failed to create directory");
+        // Create a read-only directory
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let photo_path = temp_dir.path().join("test_photo.jpg");
+
+        // Create a dummy file
+        fs::write(&photo_path, b"dummy image data").expect("Failed to create test photo");
+
+        // Make the directory read-only on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = fs::Permissions::from_mode(0o444); // read-only
+            fs::set_permissions(temp_dir.path(), permissions).expect("Failed to set permissions");
+        }
 
         // Create a test post
         let post = Post {
             id: "test-123".to_string(),
-            title: "Test Post Title".to_string(),
+            title: "Test Post".to_string(),
             author: "Test Author".to_string(),
-            date: "2023-01-01".to_string(),
+            date: "2023-01-15".to_string(),
             url: "https://example.com/post/123".to_string(),
             photo_urls: vec!["https://example.com/photo.jpg".to_string()],
         };
 
-        // Trying to write metadata to a directory should fail
-        let result = client.embed_metadata(&post, &photo_dir);
-        assert!(result.is_err());
+        // This should fail on Unix systems due to permissions
+        #[cfg(unix)]
+        {
+            let result = client.embed_metadata(&post, &photo_path);
+            assert!(result.is_err());
+
+            // Reset permissions so the temp directory can be cleaned up
+            let permissions = fs::Permissions::from_mode(0o755);
+            fs::set_permissions(temp_dir.path(), permissions).expect("Failed to reset permissions");
+        }
     });
 }
 ```
 ```
 
-### Issue 7: Missing Tests for `parse_posts` Method
+## Issue 6: Missing Tests for `set_file_timestamps` Method
+
+The `set_file_timestamps` method in `src/client.rs` lacks dedicated tests.
 
 ```markdown
-## Missing Tests for `parse_posts` Method
-
-The `parse_posts` method in `src/client.rs` should have dedicated tests for different HTML structures.
+### Description:
+The `set_file_timestamps` method sets file creation and modification timestamps but lacks tests to verify this behavior.
 
 ### What to Test:
-- Test with various HTML structures
-- Test with empty response
-- Test with malformed HTML
-- Test with missing elements (no title, author, etc.)
-- Test with relative and absolute URLs for photos
+- Test that timestamps are correctly set
+- Test with various timestamp values
+- Test error handling for invalid files
+- Test platform-specific behavior (if possible)
 
 ### Implementation Example:
 ```rust
 #[test]
-fn test_parse_posts_empty_response() {
+fn test_set_file_timestamps() {
     with_isolated_env(|| {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // HTML with no posts
-        let html = r#"<!DOCTYPE html><html><body><div class="observations-container"></div></body></html>"#;
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let test_file = temp_dir.path().join("test_file.txt");
 
-        let result = client.parse_posts(html, &server.url());
+        // Create a dummy file
+        fs::write(&test_file, b"test content").expect("Failed to create test file");
+
+        // Create a timestamp 1 day in the past
+        let now = std::time::SystemTime::now();
+        let one_day = std::time::Duration::from_secs(24 * 60 * 60);
+        let past_time = now.checked_sub(one_day).expect("Time calculation error");
+
+        // Set the timestamp
+        let result = client.set_file_timestamps(&test_file, past_time);
         assert!(result.is_ok());
 
-        let posts = result.unwrap();
-        assert!(posts.is_empty(), "Expected empty posts vector");
+        // Verify the modification time was changed
+        let metadata = fs::metadata(&test_file).expect("Failed to get file metadata");
+        let mtime = metadata.modified().expect("Failed to get modification time");
+
+        // The timestamps should be close (within 1 second tolerance for filesystem differences)
+        let diff = match mtime.duration_since(past_time) {
+            Ok(d) => d,
+            Err(e) => e.duration(),
+        };
+
+        assert!(diff.as_secs() < 2, "Timestamp difference too large: {:?}", diff);
     });
 }
 
 #[test]
-fn test_parse_posts_missing_elements() {
+fn test_set_file_timestamps_nonexistent_file() {
     with_isolated_env(|| {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // HTML with incomplete post data
-        let html = r#"<!DOCTYPE html><html><body>
-            <div class="observation" id="obs-123">
-                <!-- Missing title, author, date elements -->
-                <div class="observation-photo">
-                    <img src="/uploads/photo1.jpg">
-                </div>
-            </div>
-        </body></html>"#;
+        // Create a path to a nonexistent file
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let nonexistent_file = temp_dir.path().join("nonexistent.txt");
 
-        let result = client.parse_posts(html, &server.url());
-        assert!(result.is_ok());
+        // Try to set the timestamp
+        let now = std::time::SystemTime::now();
+        let result = client.set_file_timestamps(&nonexistent_file, now);
 
-        let posts = result.unwrap();
-        assert_eq!(posts.len(), 1, "Expected one post");
+        // Should fail with an IO error
+        assert!(result.is_err());
+        match result {
+            Err(AppError::Io(_)) => {} // expected
+            err => panic!("Expected IO error, got {:?}", err),
+        }
+    });
+}
+```
+```
 
-        // Check default values for missing elements
-        assert_eq!(posts[0].title, "Untitled Post");
-        assert_eq!(posts[0].author, "Unknown Author");
-        assert_eq!(posts[0].date, "Unknown Date");
-        assert!(posts[0].photo_urls.len() == 1);
+## Issue 7: Missing Tests for `photo_already_exists` Method
+
+The `photo_already_exists` method in `src/client.rs` lacks dedicated tests.
+
+```markdown
+### Description:
+The `photo_already_exists` method checks if a photo already exists to avoid duplicate downloads, but lacks tests to verify this functionality.
+
+### What to Test:
+- Test when a matching photo exists
+- Test when no matching photo exists
+- Test with various filename patterns
+- Test with empty or nonexistent directories
+
+### Implementation Example:
+```rust
+#[test]
+fn test_photo_already_exists_match() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+        // Create a test post
+        let post = Post {
+            id: "test-123".to_string(),
+            title: "Test Post".to_string(),
+            author: "Test Author".to_string(),
+            date: "2023-01-15".to_string(),
+            url: "https://example.com/post/123".to_string(),
+            photo_urls: vec!["https://example.com/photo.jpg".to_string()],
+        };
+
+        // Create a file that matches the post ID pattern
+        let existing_file = temp_dir.path().join("test-123_max.jpg");
+        fs::write(&existing_file, b"test image data").expect("Failed to create test file");
+
+        // Check if the photo exists
+        let result = client.photo_already_exists(&post, temp_dir.path());
+
+        // Should find the existing file
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), existing_file);
     });
 }
 
 #[test]
-fn test_parse_posts_absolute_urls() {
+fn test_photo_already_exists_no_match() {
     with_isolated_env(|| {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // HTML with absolute URLs
-        let html = format!(r#"<!DOCTYPE html><html><body>
-            <div class="observation" id="obs-123">
-                <div class="observation-text">Test Post</div>
-                <div class="observation-author">Test Author</div>
-                <div class="observation-date">2023-01-01</div>
-                <a class="observation-link" href="https://example.com/observations/123">View</a>
-                <div class="observation-photo">
-                    <img src="https://example.com/uploads/photo1.jpg">
-                </div>
-            </div>
-        </body></html>"#);
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
 
-        let result = client.parse_posts(&html, &server.url());
-        assert!(result.is_ok());
+        // Create a test post
+        let post = Post {
+            id: "test-123".to_string(),
+            title: "Test Post".to_string(),
+            author: "Test Author".to_string(),
+            date: "2023-01-15".to_string(),
+            url: "https://example.com/post/123".to_string(),
+            photo_urls: vec!["https://example.com/photo.jpg".to_string()],
+        };
 
-        let posts = result.unwrap();
-        assert_eq!(posts.len(), 1, "Expected one post");
+        // Create a file with a different ID
+        let different_file = temp_dir.path().join("different-456_max.jpg");
+        fs::write(&different_file, b"test image data").expect("Failed to create test file");
 
-        // Check URLs are preserved as absolute
-        assert_eq!(posts[0].url, "https://example.com/observations/123");
-        assert_eq!(posts[0].photo_urls[0], "https://example.com/uploads/photo1.jpg");
+        // Check if the photo exists
+        let result = client.photo_already_exists(&post, temp_dir.path());
+
+        // Should not find a match
+        assert!(result.is_none());
     });
 }
 
 #[test]
-fn test_parse_posts_relative_urls() {
+fn test_photo_already_exists_empty_dir() {
     with_isolated_env(|| {
         let mut server = mockito::Server::new();
         let client = create_mock_client(&server).expect("Failed to create mock client");
 
-        // HTML with relative URLs
-        let html = r#"<!DOCTYPE html><html><body>
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+        // Create a test post
+        let post = Post {
+            id: "test-123".to_string(),
+            title: "Test Post".to_string(),
+            author: "Test Author".to_string(),
+            date: "2023-01-15".to_string(),
+            url: "https://example.com/post/123".to_string(),
+            photo_urls: vec!["https://example.com/photo.jpg".to_string()],
+        };
+
+        // Check if the photo exists in an empty directory
+        let result = client.photo_already_exists(&post, temp_dir.path());
+
+        // Should not find anything
+        assert!(result.is_none());
+    });
+}
+
+#[test]
+fn test_photo_already_exists_nonexistent_dir() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Create a path to a nonexistent directory
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let nonexistent_dir = temp_dir.path().join("nonexistent");
+
+        // Create a test post
+        let post = Post {
+            id: "test-123".to_string(),
+            title: "Test Post".to_string(),
+            author: "Test Author".to_string(),
+            date: "2023-01-15".to_string(),
+            url: "https://example.com/post/123".to_string(),
+            photo_urls: vec!["https://example.com/photo.jpg".to_string()],
+        };
+
+        // Check if the photo exists in a nonexistent directory
+        let result = client.photo_already_exists(&post, &nonexistent_dir);
+
+        // Should handle this gracefully and return None
+        assert!(result.is_none());
+    });
+}
+```
+```
+
+## Issue 8: Missing Tests for `extract_attribute` Method
+
+The `extract_attribute` helper method in `src/client.rs` lacks dedicated tests.
+
+```markdown
+### Description:
+The `extract_attribute` helper method extracts attributes from HTML elements but lacks dedicated tests.
+
+### What to Test:
+- Test extracting existing attributes
+- Test extracting non-existent attributes
+- Test with various HTML element types
+
+### Implementation Example:
+```rust
+#[test]
+fn test_extract_attribute() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Create HTML elements for testing
+        let html = r#"<div id="test-div" class="test-class" data-custom="custom-value"></div>"#;
+        let document = scraper::Html::parse_document(html);
+        let selector = scraper::Selector::parse("div").unwrap();
+        let element = document.select(&selector).next().unwrap();
+
+        // Test extracting existing attributes
+        assert_eq!(client.extract_attribute(&element, "id"), Some("test-div".to_string()));
+        assert_eq!(client.extract_attribute(&element, "class"), Some("test-class".to_string()));
+        assert_eq!(client.extract_attribute(&element, "data-custom"), Some("custom-value".to_string()));
+
+        // Test extracting non-existent attribute
+        assert_eq!(client.extract_attribute(&element, "nonexistent"), None);
+    });
+}
+```
+```
+
+## Issue 9: Missing Tests for Rate Limiting and Retry Logic
+
+The code likely has rate limiting behavior that should be tested.
+
+```markdown
+### Description:
+There appears to be rate limiting behavior and retry logic in the client, but it lacks dedicated tests to verify this functionality.
+
+### What to Test:
+- Test that rate limiting properly spaces requests
+- Test that retries happen on certain failures
+- Test maximum retry behavior
+
+### Implementation Example:
+```rust
+#[test]
+fn test_rate_limiting() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Set up mock endpoints
+        let mock1 = server
+            .mock("GET", "/endpoint1")
+            .with_status(200)
+            .with_body("Response 1")
+            .create();
+
+        let mock2 = server
+            .mock("GET", "/endpoint2")
+            .with_status(200)
+            .with_body("Response 2")
+            .create();
+
+        // Make two requests and measure the time between them
+        let start_time = std::time::Instant::now();
+
+        // This is a simplified example - you'd need to adapt this to call your actual API methods
+        let _resp1 = client.http_client.get(&format!("{}/endpoint1", server.url()))
+            .send()
+            .expect("Request 1 failed");
+
+        let _resp2 = client.http_client.get(&format!("{}/endpoint2", server.url()))
+            .send()
+            .expect("Request 2 failed");
+
+        let elapsed = start_time.elapsed();
+
+        // If there's rate limiting, there should be some minimum delay between requests
+        // Adjust this threshold based on your actual rate limiting implementation
+        assert!(elapsed.as_millis() >= 500, "Requests happened too quickly: {:?}", elapsed);
+
+        // Verify both requests were made
+        mock1.assert();
+        mock2.assert();
+    });
+}
+
+#[test]
+fn test_retry_on_failure() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Set up a mock that fails the first time and succeeds the second time
+        let retry_mock = server
+            .mock("GET", "/retry-endpoint")
+            .with_status(429) // Too Many Requests
+            .with_body("Rate limited")
+            .expect(1)
+            .create();
+
+        let success_mock = server
+            .mock("GET", "/retry-endpoint")
+            .with_status(200)
+            .with_body("Success after retry")
+            .expect(1)
+            .create();
+
+        // If your client has a method that retries, call it here
+        // Otherwise this is just a conceptual test
+
+        // This is a simplified example assuming you have a method that retries on 429
+        // let result = client.get_with_retry(&format!("{}/retry-endpoint", server.url()));
+        // assert!(result.is_ok());
+
+        // Verify both mocks were called
+        retry_mock.assert();
+        success_mock.assert();
+    });
+}
+```
+```
+
+## Issue 10: Missing Tests for Different API Response Formats
+
+The code tries multiple URLs and handles different response formats, but lacks comprehensive tests.
+
+```markdown
+### Description:
+The client attempts to fetch posts from multiple URLs with different response formats (JSON vs HTML), but lacks comprehensive tests for this behavior.
+
+### What to Test:
+- Test fallback behavior when primary URL fails
+- Test JSON vs HTML response handling
+- Test endpoint discovery and fallback chain
+- Test with various HTTP status codes
+
+### Implementation Example:
+```rust
+#[test]
+fn test_get_posts_primary_url_success() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Mock successful JSON response from primary URL
+        let json_response = r#"[
+            {"id": "post1", "normalized_text": "Test Post 1", "author": "Author 1", "date": "2023-01-01"}
+        ]"#;
+
+        let primary_mock = server
+            .mock("GET", "/s/12345/children/67890/posts.json?locale=en")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json_response)
+            .expect(1)
+            .create();
+
+        // Call the method
+        let result = client.get_posts(1);
+
+        // Verify success
+        assert!(result.is_ok());
+        let posts = result.unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].id, "post1");
+
+        // Verify only primary URL was tried
+        primary_mock.assert();
+    });
+}
+
+#[test]
+fn test_get_posts_fallback_to_html() {
+    with_isolated_env(|| {
+        let mut server = mockito::Server::new();
+        let client = create_mock_client(&server).expect("Failed to create mock client");
+
+        // Mock failed JSON response from primary URL
+        let primary_mock = server
+            .mock("GET", "/s/12345/children/67890/posts.json?locale=en")
+            .with_status(404)
+            .expect(1)
+            .create();
+
+        // Mock successful HTML response from fallback URL
+        let html_response = r#"<!DOCTYPE html><html><body>
             <div class="observation" id="obs-123">
                 <div class="observation-text">Test Post</div>
                 <div class="observation-author">Test Author</div>
@@ -689,85 +823,13 @@ fn test_parse_posts_relative_urls() {
             </div>
         </body></html>"#;
 
-        let result = client.parse_posts(html, &server.url());
-        assert!(result.is_ok());
+        let fallback_mock = server
+            .mock("GET", "/observations")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(html_response)
+            .expect(1)
+            .create();
 
-        let posts = result.unwrap();
-        assert_eq!(posts.len(), 1, "Expected one post");
-
-        // Check URLs are converted to absolute
-        let base_domain = server.url().split("/schools").next().unwrap_or("");
-        assert_eq!(posts[0].url, format!("{}/observations/123", base_domain));
-        assert_eq!(posts[0].photo_urls[0], format!("{}/uploads/photo1.jpg", base_domain));
-    });
-}
-```
-```
-
-### Issue 8: Missing Tests for Default Cache Directory
-
-```markdown
-## Missing Tests for Default Cache Directory
-
-The `default_cache_dir` function in `src/cache.rs` lacks tests.
-
-### What to Test:
-- Test that the function returns a valid directory path
-- Test that the path contains the expected subfolders
-- Test the fallback behavior when `dirs::cache_dir()` returns None
-
-### Implementation Example:
-```rust
-use std::path::Path;
-use mockall::predicate::*;
-use mockall::*;
-
-// Create a mock for testing the fallback behavior
-#[automock]
-pub trait CacheDirProvider {
-    fn cache_dir(&self) -> Option<PathBuf>;
-}
-
-struct DefaultCacheDirProvider;
-
-impl CacheDirProvider for DefaultCacheDirProvider {
-    fn cache_dir(&self) -> Option<PathBuf> {
-        dirs::cache_dir()
-    }
-}
-
-// Modified function that uses the provider for testing
-pub fn default_cache_dir_with_provider<P: CacheDirProvider>(provider: &P) -> PathBuf {
-    if let Some(cache_dir) = provider.cache_dir() {
-        cache_dir.join("transparent-classroom-cache")
-    } else {
-        PathBuf::from("./.cache/transparent-classroom-cache")
-    }
-}
-
-#[test]
-fn test_default_cache_dir_normal_path() {
-    let result = default_cache_dir();
-
-    // Check that the path includes the expected subfolder
-    assert!(result.to_string_lossy().contains("transparent-classroom-cache"));
-
-    // Should be an absolute path in normal case
-    if dirs::cache_dir().is_some() {
-        assert!(result.is_absolute());
-    }
-}
-
-#[test]
-fn test_default_cache_dir_fallback() {
-    // Create a mock provider that returns None
-    let mut mock_provider = MockCacheDirProvider::new();
-    mock_provider.expect_cache_dir().return_const(None);
-
-    let result = default_cache_dir_with_provider(&mock_provider);
-
-    // Should use the fallback relative path
-    assert_eq!(result, PathBuf::from("./.cache/transparent-classroom-cache"));
-}
-```
-```
+        // Call the method
+        let

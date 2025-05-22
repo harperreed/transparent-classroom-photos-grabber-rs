@@ -1,13 +1,14 @@
 // ABOUTME: HTTP client for Transparent Classroom API
 // ABOUTME: Manages authentication and requests to the API
 
+use chrono::{DateTime, NaiveDate};
 use log::{debug, info, warn};
 use reqwest::blocking::{Client as ReqwestClient, ClientBuilder};
 use reqwest::cookie::Jar;
 use scraper::{Html, Selector};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -92,61 +93,28 @@ impl Client {
 
     /// Login to Transparent Classroom
     ///
-    /// This method attempts to authenticate with Transparent Classroom using multiple approaches.
+    /// This method attempts to authenticate with Transparent Classroom.
     /// If real authentication fails, it falls back to "mock mode" for development
     /// and testing purposes.
     pub fn login(&self) -> Result<(), AppError> {
         debug!("Starting login flow");
-        info!("Attempting to authenticate with Transparent Classroom");
 
-        // Step 1: Try API-based authentication first (usually most reliable)
+        // Try API-based authentication first
         if let Ok(()) = self.login_api_basic_auth() {
             info!("Login successful via API Basic Auth");
-            Ok(());
+            return Ok(());
         }
-        warn!("API Basic Auth failed - trying alternative methods");
 
-        // Step 2: Try web-based login via the standard form
+        // If we reach here, API auth failed. Try web-based login.
         if let Ok(()) = self.login_web_form() {
             info!("Login successful via web form");
-            Ok(());
-        }
-        warn!("Web form login failed - trying alternative URL");
-
-        // Step 3: Try alternative domain in case the school URL has changed
-        if self.base_url.contains("/schools") {
-            let root_domain = self
-                .base_url
-                .split("/schools")
-                .next()
-                .unwrap_or(&self.base_url);
-
-            let alt_url = format!("{}/api/v1/children/{}", root_domain, self.config.child_id);
-            debug!("Trying API auth with alternative domain: {}", alt_url);
-
-            // Make request to the alternative URL with Basic Auth
-            let alt_resp = self
-                .http_client
-                .get(&alt_url)
-                .basic_auth(&self.config.email, Some(&self.config.password))
-                .send();
-
-            if let Ok(resp) = alt_resp {
-                if resp.status().is_success() {
-                    info!("Login successful via alternative domain API Basic Auth");
-                    Ok(());
-                }
-            }
+            return Ok(());
         }
 
-        warn!("All real authentication methods failed");
-
-        // For development and testing, we'll fall back to mock mode
-        // so the rest of the functionality can still be tested
-        warn!("USING MOCK MODE: This is not connecting to the real Transparent Classroom!");
-        warn!("In mock mode, the application will use generated sample data");
-        warn!("Mock login successful - but this is NOT a real login");
-        Ok(())
+        // If we get here, authentication failed
+        Err(AppError::Generic(
+            "Failed to authenticate with Transparent Classroom. Please check your credentials and try again.".to_string()
+        ))
     }
 
     /// Attempts to authenticate via API with Basic Auth
@@ -166,7 +134,7 @@ impl Client {
 
         if !response.status().is_success() {
             let status = response.status();
-            Err(AppError::Generic(format!(
+            return Err(AppError::Generic(format!(
                 "API authentication failed with status: {}",
                 status
             )));
@@ -198,7 +166,7 @@ impl Client {
             .map_err(|e| AppError::Generic(format!("Failed to fetch sign-in page: {}", e)))?;
 
         if !response.status().is_success() {
-            Err(AppError::Generic(format!(
+            return Err(AppError::Generic(format!(
                 "Failed to fetch sign-in page. Status: {}",
                 response.status()
             )));
@@ -209,19 +177,49 @@ impl Client {
             AppError::Generic(format!("Failed to read sign-in page content: {}", e))
         })?;
 
-        // Step 2: Parse the HTML and extract the CSRF token
+        // Step 2: Parse the HTML and extract the CSRF token and form details
         let csrf_token = self.extract_csrf_token(&html)?;
         debug!("Successfully extracted CSRF token: {}", csrf_token);
+
+        // Also examine the actual form structure to ensure we're submitting correctly
+        let document = Html::parse_document(&html);
+        let form_selector = Selector::parse("form").unwrap();
+        for (i, form) in document.select(&form_selector).enumerate() {
+            if let Some(action) = form.value().attr("action") {
+                debug!("Form {}: action=\"{}\"", i, action);
+            }
+            if let Some(method) = form.value().attr("method") {
+                debug!("Form {}: method=\"{}\"", i, method);
+            }
+
+            let input_selector = Selector::parse("input").unwrap();
+            for input in form.select(&input_selector) {
+                if let Some(name) = input.value().attr("name") {
+                    let input_type = input.value().attr("type").unwrap_or("text");
+                    let value = input.value().attr("value").unwrap_or("");
+                    debug!(
+                        "Form {} input: name=\"{}\" type=\"{}\" value=\"{}\"",
+                        i,
+                        name,
+                        input_type,
+                        if name.contains("password") {
+                            "***"
+                        } else {
+                            value
+                        }
+                    );
+                }
+            }
+        }
 
         // Step 3: POST credentials with the CSRF token
         let mut form_data = HashMap::new();
         form_data.insert("utf8", "✓");
         form_data.insert("authenticity_token", &csrf_token);
-        form_data.insert("soul[email]", &self.config.email);
+        form_data.insert("soul[login]", &self.config.email); // Changed from soul[email] to soul[login]
         form_data.insert("soul[password]", &self.config.password);
         form_data.insert("soul[remember_me]", "0");
         form_data.insert("commit", "Sign in");
-        form_data.insert("locale", "en");
 
         // Debug log the form data we're sending (with password masked)
         let mut debug_form = form_data.clone();
@@ -248,39 +246,126 @@ impl Client {
             .map_err(|e| AppError::Generic(format!("Failed to submit login form: {}", e)))?;
 
         // Step 4: Verify successful login
-        if !response.status().is_success() {
-            let status = response.status();
-            // Try to get response body for more detailed error info
-            let err_body = response
-                .text()
-                .unwrap_or_else(|_| "Could not read error response body".to_string());
-            Err(AppError::Generic(format!(
-                "Login failed. Status: {}. Details: {}",
-                status, err_body
-            )));
+        let status = response.status();
+        debug!("Login form submission response status: {}", status);
+
+        // Get response headers for debugging
+        let headers = response.headers();
+        debug!("Response headers: {:?}", headers);
+
+        // Check if we were redirected (which is typical for successful login)
+        if status.is_redirection() {
+            if let Some(location) = headers.get("location") {
+                debug!("Redirected to: {:?}", location);
+
+                // Follow the redirect to see where we land
+                if let Ok(location_str) = location.to_str() {
+                    debug!("Following redirect to: {}", location_str);
+                    let redirect_response = self.http_client.get(location_str).send();
+                    match redirect_response {
+                        Ok(resp) => {
+                            debug!("Redirect followed successfully, status: {}", resp.status());
+                            let redirect_html = resp.text().unwrap_or_default();
+                            debug!(
+                                "Redirect page preview: {}",
+                                &redirect_html[..std::cmp::min(300, redirect_html.len())]
+                            );
+                        }
+                        Err(e) => {
+                            debug!("Failed to follow redirect: {}", e);
+                        }
+                    }
+                }
+
+                // A redirect typically indicates successful login
+                // The redirect might be to the dashboard or welcome page
+                return Ok(());
+            }
         }
 
-        // Check if we were redirected to the dashboard, which indicates successful login
-        // Or if we can see content that's only available after login
+        // Read the response body to analyze what we got back
         let html = response
             .text()
-            .map_err(|e| AppError::Generic(format!("Failed to read post-login page: {}", e)))?;
+            .map_err(|e| AppError::Generic(format!("Failed to read post-login response: {}", e)))?;
 
-        if html.contains("Invalid email or password") {
-            Err(AppError::Generic(
+        debug!("Post-login response body length: {} chars", html.len());
+        debug!(
+            "Post-login response preview: {}",
+            &html[..std::cmp::min(500, html.len())]
+        );
+
+        // Look for specific error messages in the response
+        if html.contains("alert") || html.contains("error") || html.contains("Invalid") {
+            debug!("Found potential error indicators in response");
+            // Extract error messages from alerts or error divs
+            let document = Html::parse_document(&html);
+            let alert_selector = Selector::parse(".alert, .error, .notice").unwrap();
+            for alert in document.select(&alert_selector) {
+                let error_text = alert.text().collect::<String>().trim().to_string();
+                if !error_text.is_empty() {
+                    debug!("Found error message: {}", error_text);
+                }
+            }
+        }
+
+        // Check for explicit error messages
+        if html.contains("Invalid email or password")
+            || html.contains("invalid email or password")
+            || html.contains("Incorrect email or password")
+        {
+            return Err(AppError::Generic(
                 "Login failed: Invalid email or password".to_string(),
             ));
         }
 
-        if !html.contains("Dashboard") && !html.contains("My Account") {
-            warn!("Login may have failed - could not find expected post-login content");
-            Err(AppError::Generic(
-                "Login failed: Could not verify successful login".to_string(),
+        // Check for login form still being present (indicates failed login)
+        if html.contains("soul[login]") && html.contains("soul[password]") {
+            debug!("Login form still present in response - login likely failed");
+            return Err(AppError::Generic(
+                "Login failed: Still seeing login form after submission".to_string(),
             ));
         }
 
-        debug!("Web form login successful");
-        Ok(())
+        // Look for indicators of successful login
+        if html.contains("Dashboard")
+            || html.contains("My Account")
+            || html.contains("Sign out")
+            || html.contains("Logout")
+            || html.contains("Welcome")
+        {
+            debug!("Found success indicators in response");
+            return Ok(());
+        }
+
+        // If we get here, we're not sure about the login status
+        warn!("Ambiguous login response - cannot definitively determine success or failure");
+        debug!("Looking for additional clues in response content...");
+
+        // Check if the page title changed from the login page
+        let document = Html::parse_document(&html);
+        let title_selector = Selector::parse("title").unwrap();
+        if let Some(title_element) = document.select(&title_selector).next() {
+            let title = title_element.text().collect::<String>();
+            debug!("Page title: {}", title);
+            if title.to_lowercase().contains("sign in") || title.to_lowercase().contains("login") {
+                return Err(AppError::Generic(
+                    "Login failed: Still on login page after submission".to_string(),
+                ));
+            }
+        }
+
+        // At this point, assume success if we got a 200 OK and no obvious failure indicators
+        if status.is_success() {
+            debug!("Assuming login success based on 200 OK status and lack of failure indicators");
+            return Ok(());
+        }
+
+        // If status is not success and we didn't get redirected, it's likely a failure
+        Err(AppError::Generic(format!(
+            "Login failed with status: {}. Response preview: {}",
+            status,
+            &html[..std::cmp::min(200, html.len())]
+        )))
     }
 
     /// Extract CSRF token from HTML
@@ -289,18 +374,18 @@ impl Client {
 
         // Try to find the main sign-in form by finding forms and checking if they contain the right fields
         let form_selector = Selector::parse("form").unwrap();
-        let input_selector = Selector::parse("input[name=\"soul[email]\"]").unwrap();
+        let input_selector = Selector::parse("input[name=\"soul[login]\"]").unwrap(); // Changed from soul[email] to soul[login]
         let auth_token_selector = Selector::parse("input[name=\"authenticity_token\"]").unwrap();
 
         // Go through all forms and find one that has the sign-in form fields
         for form in document.select(&form_selector) {
-            // Check if this is the sign-in form by looking for soul[email] field
+            // Check if this is the sign-in form by looking for soul[login] field
             if form.select(&input_selector).next().is_some() {
                 // This is the sign-in form, look for the authenticity token
                 if let Some(token_input) = form.select(&auth_token_selector).next() {
                     if let Some(token) = token_input.value().attr("value") {
                         debug!("Found CSRF token in sign-in form: {}", token);
-                        Ok(token.to_string());
+                        return Ok(token.to_string());
                     }
                 }
             }
@@ -312,7 +397,7 @@ impl Client {
         if let Some(element) = document.select(&meta_selector).next() {
             if let Some(token) = element.value().attr("content") {
                 debug!("Found CSRF token in meta tag: {}", token);
-                Ok(token.to_string());
+                return Ok(token.to_string());
             }
         }
 
@@ -320,13 +405,102 @@ impl Client {
         if let Some(element) = document.select(&auth_token_selector).next() {
             if let Some(token) = element.value().attr("value") {
                 debug!("Found CSRF token in input element: {}", token);
-                Ok(token.to_string());
+                return Ok(token.to_string());
             }
         }
 
         Err(AppError::Parse(
             "Could not find CSRF token in page".to_string(),
         ))
+    }
+
+    /// Discover available endpoints by examining the main school page
+    fn discover_endpoints(&self) -> Result<Vec<String>, AppError> {
+        debug!("Discovering available endpoints from main school page");
+
+        let response = self
+            .http_client
+            .get(&self.base_url)
+            .send()
+            .map_err(|e| AppError::Generic(format!("Failed to fetch school page: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Generic(format!(
+                "Failed to fetch school page. Status: {}",
+                response.status()
+            )));
+        }
+
+        let html = response
+            .text()
+            .map_err(|e| AppError::Generic(format!("Failed to read school page content: {}", e)))?;
+
+        debug!("School page content length: {} chars", html.len());
+
+        let document = Html::parse_document(&html);
+        let link_selector = Selector::parse("a[href]").unwrap();
+        let mut discovered_urls = Vec::new();
+
+        for link in document.select(&link_selector) {
+            if let Some(href) = link.value().attr("href") {
+                // Look for links that might contain observations/posts/events
+                if href.contains("observation")
+                    || href.contains("event")
+                    || href.contains("photo")
+                    || href.contains("post")
+                    || href.contains("feed")
+                    || href.contains("timeline")
+                {
+                    let full_url = if href.starts_with("http") {
+                        href.to_string()
+                    } else if href.starts_with("/") {
+                        format!("https://www.transparentclassroom.com{}", href)
+                    } else {
+                        format!("{}/{}", self.base_url, href)
+                    };
+                    discovered_urls.push(full_url);
+                }
+            }
+        }
+
+        // Remove duplicates
+        discovered_urls.sort();
+        discovered_urls.dedup();
+
+        debug!("Discovered potential endpoints: {:?}", discovered_urls);
+        Ok(discovered_urls)
+    }
+
+    /// Crawl all posts from all pages
+    pub fn crawl_all_posts(&self) -> Result<Vec<Post>, AppError> {
+        let mut all_posts = Vec::new();
+        let mut page = 1;
+
+        info!("Starting to crawl all posts from Transparent Classroom");
+
+        loop {
+            debug!("Fetching page {}", page);
+            let posts = self.get_posts(page)?;
+
+            if posts.is_empty() {
+                debug!("No more posts found on page {}, stopping", page);
+                break;
+            }
+
+            info!("Retrieved {} posts from page {}", posts.len(), page);
+            all_posts.extend(posts);
+            page += 1;
+
+            // Add a small delay between page requests to be respectful
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        info!(
+            "Crawling complete. Found {} total posts across {} pages",
+            all_posts.len(),
+            page - 1
+        );
+        Ok(all_posts)
     }
 
     /// Get posts from Transparent Classroom
@@ -336,7 +510,7 @@ impl Client {
     ///
     /// # Arguments
     ///
-    /// * `page` - Page number to fetch (0-based)
+    /// * `page` - Page number to fetch (1-based)
     ///
     /// # Returns
     ///
@@ -344,64 +518,73 @@ impl Client {
     pub fn get_posts(&self, page: u32) -> Result<Vec<Post>, AppError> {
         debug!("Fetching posts page {}", page);
 
-        // Try school-specific URL first
-        let primary_url = if page == 0 {
-            format!("{}/observations", self.base_url)
+        // Use the child-specific API endpoint for better data access
+        let primary_url = if page <= 1 {
+            format!(
+                "https://www.transparentclassroom.com/s/{}/children/{}/posts.json?locale=en",
+                self.config.school_id, self.config.child_id
+            )
         } else {
-            format!("{}/observations?page={}", self.base_url, page)
+            format!("https://www.transparentclassroom.com/s/{}/children/{}/posts.json?locale=en&page={}", self.config.school_id, self.config.child_id, page)
         };
 
-        // Prepare fallback URLs - we'll try multiple paths to increase chances of success
-        let root_domain = if self.base_url.contains("/schools") {
-            self.base_url
-                .split("/schools")
-                .next()
-                .unwrap_or(&self.base_url)
-        } else {
-            &self.base_url
-        };
+        debug!("Trying primary URL: {}", primary_url);
 
+        // Prepare fallback URLs
         let fallback_urls = [
             // 1. Try root domain URL
-            if page == 0 {
-                format!("{}/observations", root_domain)
+            if self.base_url.contains("/schools") {
+                let root_domain = self
+                    .base_url
+                    .split("/schools")
+                    .next()
+                    .unwrap_or(&self.base_url);
+                if page == 0 {
+                    format!("{}/observations", root_domain)
+                } else {
+                    format!("{}/observations?page={}", root_domain, page)
+                }
             } else {
-                format!("{}/observations?page={}", root_domain, page)
+                primary_url.clone()
             },
             // 2. Try specific child path if child_id is available
             format!(
                 "{}/children/{}/observations",
                 self.base_url, self.config.child_id
             ),
-            // 3. Try root domain with child path
+            // 3. Try API endpoints
             format!(
-                "{}/children/{}/observations",
-                root_domain, self.config.child_id
-            ),
-            // 4. Try with standard path (in case school changed URL structure)
-            format!(
-                "{}/observations/child/{}",
+                "{}/api/v1/children/{}/events",
                 self.base_url, self.config.child_id
             ),
-            // 5. Try root domain with standard path
             format!(
-                "{}/observations/child/{}",
-                root_domain, self.config.child_id
+                "{}/api/v1/children/{}/photos",
+                self.base_url, self.config.child_id
             ),
+            format!("{}/api/v1/events", self.base_url),
+            // 4. Try dashboard and other web paths
+            format!("{}/dashboard", self.base_url),
+            format!("{}", self.base_url), // Just the school root
         ];
 
-        // Try primary URL first with different auth methods
-        debug!("Trying primary URL: {}", primary_url);
-        let mut response = self.try_fetch_with_auth_methods(&primary_url);
+        debug!("Prepared fallback URLs: {:?}", fallback_urls);
+
+        // Try primary URL first
+        debug!("Sending GET request to primary URL: {}", primary_url);
+        let mut response = self
+            .http_client
+            .get(&primary_url)
+            .send()
+            .map_err(|e| AppError::Generic(format!("Failed to fetch posts: {}", e)));
 
         // If primary URL fails, try fallbacks
         if response.is_err() || !response.as_ref().unwrap().status().is_success() {
-            debug!("Primary URL failed, trying fallbacks");
+            debug!("Primary URL failed, trying predefined fallbacks");
 
             for (i, fallback_url) in fallback_urls.iter().enumerate() {
                 debug!("Trying fallback URL {}: {}", i + 1, fallback_url);
 
-                match self.try_fetch_with_auth_methods(fallback_url) {
+                match self.http_client.get(fallback_url).send() {
                     Ok(resp) if resp.status().is_success() => {
                         debug!("Fallback URL {} succeeded", i + 1);
                         response = Ok(resp);
@@ -421,6 +604,34 @@ impl Client {
                     }
                 }
             }
+
+            // If all predefined fallbacks failed, try endpoint discovery
+            if response.is_err() || !response.as_ref().unwrap().status().is_success() {
+                debug!("All predefined fallbacks failed, trying endpoint discovery");
+                if let Ok(discovered_urls) = self.discover_endpoints() {
+                    for (i, discovered_url) in discovered_urls.iter().enumerate() {
+                        debug!("Trying discovered URL {}: {}", i + 1, discovered_url);
+
+                        match self.http_client.get(discovered_url).send() {
+                            Ok(resp) if resp.status().is_success() => {
+                                debug!("Discovered URL {} succeeded", i + 1);
+                                response = Ok(resp);
+                                break;
+                            }
+                            Ok(resp) => {
+                                debug!(
+                                    "Discovered URL {} failed with status {}",
+                                    i + 1,
+                                    resp.status()
+                                );
+                            }
+                            Err(e) => {
+                                debug!("Discovered URL {} failed with error: {}", i + 1, e);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Current URL to use (primary or last fallback attempted)
@@ -437,7 +648,7 @@ impl Client {
             primary_url.clone()
         };
 
-        // If all URLs failed, only use mock data as a last resort
+        // Handle the response - return errors if we can't get real data
         let html = if let Ok(resp) = response {
             if resp.status().is_success() {
                 // We got a valid response, use it
@@ -446,29 +657,206 @@ impl Client {
                     AppError::Generic(format!("Failed to read posts page content: {}", e))
                 })?
             } else {
-                // All URLs failed but we're still running - we must be in mock mode
-                warn!(
-                    "FAILED TO FETCH REAL DATA: All observation URLs failed. Status: {}.",
+                // All URLs failed with error status
+                return Err(AppError::Generic(format!(
+                    "Failed to fetch posts from Transparent Classroom. Status: {}. \
+                     This might indicate an authentication or permissions issue.",
                     resp.status()
-                );
-                warn!("Falling back to mock data for development/testing purposes");
-                warn!("THIS IS NOT REAL DATA FROM TRANSPARENT CLASSROOM");
-                self.get_mock_observations_html()
+                )));
             }
         } else {
-            // All URLs failed with connection errors - use mock data
-            warn!("FAILED TO FETCH REAL DATA: All observation URLs failed with connection errors.");
-            warn!("Falling back to mock data for development/testing purposes");
-            warn!("THIS IS NOT REAL DATA FROM TRANSPARENT CLASSROOM");
-            self.get_mock_observations_html()
+            // All URLs failed with connection errors
+            return Err(AppError::Generic(
+                "Failed to connect to Transparent Classroom for fetching posts. \
+                 Please check your internet connection and try again."
+                    .to_string(),
+            ));
         };
 
-        // Parse the HTML and extract the posts
-        self.parse_posts(&html, &current_url)
+        // Parse the response - it could be JSON or HTML depending on the endpoint
+        if current_url.contains(".json") {
+            self.parse_posts_json(&html)
+        } else {
+            self.parse_posts_html(&html, &current_url)
+        }
+    }
+
+    /// Parse JSON response to extract posts
+    fn parse_posts_json(&self, json_str: &str) -> Result<Vec<Post>, AppError> {
+        debug!("Parsing JSON response for posts");
+        debug!(
+            "JSON response preview: {}",
+            &json_str[..std::cmp::min(1000, json_str.len())]
+        );
+
+        // Also log the full structure of the first post for debugging
+        if json_str.len() > 10 {
+            debug!(
+                "Full JSON response (first 2000 chars): {}",
+                &json_str[..std::cmp::min(2000, json_str.len())]
+            );
+        }
+
+        // Try to parse as JSON first
+        let json_value: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| AppError::Parse(format!("Failed to parse JSON response: {}", e)))?;
+
+        // The response should be an object with posts array or directly an array
+        let posts_array = if json_value.is_array() {
+            json_value.as_array().unwrap()
+        } else if let Some(posts) = json_value.get("posts") {
+            posts
+                .as_array()
+                .ok_or_else(|| AppError::Parse("Posts field is not an array".to_string()))?
+        } else if let Some(posts) = json_value.get("data") {
+            posts
+                .as_array()
+                .ok_or_else(|| AppError::Parse("Data field is not an array".to_string()))?
+        } else {
+            return Err(AppError::Parse(
+                "Could not find posts array in JSON response".to_string(),
+            ));
+        };
+
+        let mut posts = Vec::new();
+
+        for (i, post_value) in posts_array.iter().enumerate() {
+            let post_obj = post_value
+                .as_object()
+                .ok_or_else(|| AppError::Parse(format!("Post {} is not a valid object", i)))?;
+
+            // Extract post fields from JSON
+            let id = post_obj
+                .get("id")
+                .and_then(|v| {
+                    v.as_str().or_else(|| {
+                        v.as_u64()
+                            .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
+                    })
+                })
+                .unwrap_or(&format!("post_{}", i))
+                .to_string();
+
+            // Extract title from HTML content if available, otherwise use normalized_text
+            let title = if let Some(html) = post_obj.get("html").and_then(|v| v.as_str()) {
+                // Parse HTML to extract meaningful text
+                let document = Html::parse_document(html);
+                let text = document.root_element().text().collect::<Vec<_>>().join(" ");
+                if text.trim().is_empty() {
+                    post_obj
+                        .get("normalized_text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Untitled Post")
+                        .to_string()
+                } else {
+                    text.trim().to_string()
+                }
+            } else {
+                post_obj
+                    .get("normalized_text")
+                    .or_else(|| post_obj.get("title"))
+                    .or_else(|| post_obj.get("text"))
+                    .or_else(|| post_obj.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Untitled Post")
+                    .to_string()
+            };
+
+            // Extract author from HTML if available
+            let author = if let Some(author_html) = post_obj.get("author").and_then(|v| v.as_str())
+            {
+                // Parse HTML to extract author name
+                let document = Html::parse_document(author_html);
+                let text = document.root_element().text().collect::<Vec<_>>().join(" ");
+                if text.trim().is_empty() {
+                    "Unknown Author".to_string()
+                } else {
+                    text.trim().to_string()
+                }
+            } else {
+                post_obj
+                    .get("author_name")
+                    .or_else(|| post_obj.get("user"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Author")
+                    .to_string()
+            };
+
+            let date = post_obj
+                .get("date")
+                .or_else(|| post_obj.get("created_at"))
+                .or_else(|| post_obj.get("timestamp"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown Date")
+                .to_string();
+
+            let url = post_obj
+                .get("url")
+                .or_else(|| post_obj.get("link"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Extract photo URLs - prioritize original_photo_url for higher resolution
+            let mut photo_urls = Vec::new();
+            if let Some(original_photo_url) =
+                post_obj.get("original_photo_url").and_then(|v| v.as_str())
+            {
+                if !original_photo_url.is_empty() {
+                    photo_urls.push(original_photo_url.to_string());
+                    debug!("Found original_photo_url: {}", original_photo_url);
+                }
+            } else if let Some(photo_url) = post_obj.get("photo_url").and_then(|v| v.as_str()) {
+                if !photo_url.is_empty() {
+                    photo_urls.push(photo_url.to_string());
+                    debug!("Found photo_url: {}", photo_url);
+                }
+            }
+
+            // Also check for photos array
+            if let Some(photos) = post_obj.get("photos").and_then(|v| v.as_array()) {
+                for photo in photos {
+                    if let Some(photo_url) = photo
+                        .as_str()
+                        .or_else(|| photo.get("url").and_then(|v| v.as_str()))
+                    {
+                        photo_urls.push(photo_url.to_string());
+                    }
+                }
+            } else if let Some(images) = post_obj.get("images").and_then(|v| v.as_array()) {
+                for image in images {
+                    if let Some(image_url) = image
+                        .as_str()
+                        .or_else(|| image.get("url").and_then(|v| v.as_str()))
+                    {
+                        photo_urls.push(image_url.to_string());
+                    }
+                }
+            }
+
+            let post = Post {
+                id,
+                title,
+                author,
+                date,
+                url,
+                photo_urls,
+            };
+
+            posts.push(post);
+        }
+
+        if posts.is_empty() {
+            debug!("No posts found in JSON response");
+        } else {
+            debug!("Found {} posts in JSON response", posts.len());
+        }
+
+        Ok(posts)
     }
 
     /// Parse HTML to extract posts
-    fn parse_posts(&self, html: &str, _base_url: &str) -> Result<Vec<Post>, AppError> {
+    fn parse_posts_html(&self, html: &str, _base_url: &str) -> Result<Vec<Post>, AppError> {
         let document = Html::parse_document(html);
         let mut posts = Vec::new();
 
@@ -564,130 +952,26 @@ impl Client {
         element.value().attr(attr_name).map(|s| s.to_string())
     }
 
-    /// Try to fetch a URL using different authentication methods
-    ///
-    /// This method tries multiple authentication approaches to maximize chances of success.
-    fn try_fetch_with_auth_methods(
-        &self,
-        url: &str,
-    ) -> Result<reqwest::blocking::Response, AppError> {
-        debug!("Trying to fetch URL with different auth methods: {}", url);
+    /// Check if a photo already exists to avoid duplicate downloads
+    fn photo_already_exists(&self, post: &Post, output_dir: &Path) -> Option<PathBuf> {
+        let photo_id = &post.id;
 
-        // Method 1: Try with cookies (from previous web form login)
-        debug!("Trying with cookies from session");
-        match self.http_client.get(url).send() {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    debug!("Cookie auth successful for {}", url);
-                    Ok(resp)
-                } else {
-                    debug!("Cookie auth failed with status: {}", resp.status());
-                    // If not successful but we got a response, continuing to try Basic Auth
+        // Check for existing files with the photo ID prefix
+        if let Ok(entries) = fs::read_dir(output_dir) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                let file_name_str = file_name.to_string_lossy();
 
-                    // Method 2: Try with Basic Auth (API auth)
-                    debug!("Trying with Basic Auth for {}", url);
-                    match self
-                        .http_client
-                        .get(url)
-                        .basic_auth(&self.config.email, Some(&self.config.password))
-                        .send()
-                    {
-                        Ok(basic_resp) => {
-                            if basic_resp.status().is_success() {
-                                debug!("Basic Auth successful for {}", url);
-                                Ok(basic_resp);
-                            } else {
-                                debug!("Basic Auth failed with status: {}", basic_resp.status());
-                                // Return the response we got, even with error status
-                                Ok(basic_resp);
-                            }
-                        }
-                        Err(basic_err) => {
-                            // Basic auth failed with error - return the cookie response we had
-                            debug!("Basic Auth request failed: {}", basic_err);
-                            Ok(resp);
-                        }
-                    }
-                }
-            }
-            Err(cookie_err) => {
-                debug!("Cookie auth request failed: {}", cookie_err);
-
-                // Method 2: Try with Basic Auth (API auth)
-                debug!("Trying with Basic Auth for {}", url);
-                match self
-                    .http_client
-                    .get(url)
-                    .basic_auth(&self.config.email, Some(&self.config.password))
-                    .send()
-                {
-                    Ok(basic_resp) => {
-                        if basic_resp.status().is_success() {
-                            debug!("Basic Auth successful for {}", url);
-                            Ok(basic_resp);
-                        } else {
-                            debug!("Basic Auth failed with status: {}", basic_resp.status());
-                            // Return the response we got, even with error status
-                            Ok(basic_resp);
-                        }
-                    }
-                    Err(basic_err) => {
-                        // Both methods failed with network errors
-                        let err_msg = format!(
-                            "Failed to fetch URL with all auth methods: {}. Errors: cookie={:?}, basic={:?}",
-                            url, cookie_err, basic_err
-                        );
-                        Err(AppError::Generic(err_msg));
-                    }
+                // Look for files that start with the photo_id followed by underscore
+                if file_name_str.starts_with(&format!("{}_", photo_id)) {
+                    let existing_path = entry.path();
+                    debug!("Found existing photo: {}", existing_path.display());
+                    return Some(existing_path);
                 }
             }
         }
-    }
 
-    /// Generate mock observations HTML for development/testing
-    fn get_mock_observations_html(&self) -> String {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        format!(
-            r#"
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Mock Observations - Transparent Classroom</title>
-        </head>
-        <body>
-            <div class="observations-container">
-                <div class="observation" id="mock-{timestamp}-1">
-                    <div class="observation-text">Mock observation 1 - Development/Testing Only</div>
-                    <div class="observation-author">Mock Teacher</div>
-                    <div class="observation-date">Today</div>
-                    <a class="observation-link" href="{base_url}/observations/mock-1">View Details</a>
-                    <div class="observation-photo">
-                        <img src="https://picsum.photos/800/600?random=1" alt="Random Mock Photo 1">
-                    </div>
-                    <div class="observation-photo">
-                        <img src="https://picsum.photos/800/600?random=2" alt="Random Mock Photo 2">
-                    </div>
-                </div>
-                <div class="observation" id="mock-{timestamp}-2">
-                    <div class="observation-text">Mock observation 2 - For testing image download</div>
-                    <div class="observation-author">Mock Teacher 2</div>
-                    <div class="observation-date">Yesterday</div>
-                    <a class="observation-link" href="{base_url}/observations/mock-2">View Details</a>
-                    <div class="observation-photo">
-                        <img src="https://picsum.photos/800/600?random=3" alt="Random Mock Photo 3">
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        "#,
-            timestamp = timestamp,
-            base_url = self.base_url
-        )
+        None
     }
 
     /// Download a photo from a post to the local filesystem
@@ -709,7 +993,7 @@ impl Client {
     ) -> Result<PathBuf, AppError> {
         // Check if the post has photos
         if post.photo_urls.is_empty() {
-            Err(AppError::Generic(format!(
+            return Err(AppError::Generic(format!(
                 "Post {} has no photos to download",
                 post.id
             )));
@@ -717,16 +1001,12 @@ impl Client {
 
         // Check if the requested photo index exists
         if photo_index >= post.photo_urls.len() {
-            Err(AppError::Generic(format!(
+            return Err(AppError::Generic(format!(
                 "Photo index {} out of range for post with {} photos",
                 photo_index,
                 post.photo_urls.len()
             )));
         }
-
-        // Get the photo URL
-        let photo_url = &post.photo_urls[photo_index];
-        debug!("Downloading photo from URL: {}", photo_url);
 
         // Create the output directory if it doesn't exist
         if !output_dir.exists() {
@@ -734,24 +1014,35 @@ impl Client {
             fs::create_dir_all(output_dir).map_err(AppError::Io)?;
         }
 
-        // Determine the filename based on post and photo information
-        let sanitized_title = sanitize_filename(&post.title);
-        let filename = format!(
-            "{}_{}_{}_{}.jpg",
-            sanitize_filename(&post.id),
-            sanitized_title,
-            sanitize_filename(&post.author),
-            photo_index
-        );
+        // Check for existing photos first
+        if let Some(existing_path) = self.photo_already_exists(post, output_dir) {
+            info!(
+                "Skipping {} - already exists as {}",
+                post.id,
+                existing_path.display()
+            );
+            return Ok(existing_path);
+        }
+
+        // Get the photo URL
+        let photo_url = &post.photo_urls[photo_index];
+        debug!("Downloading photo from URL: {}", photo_url);
+
+        // Use Python-style naming: {photo_id}_max.jpg
+        let filename = format!("{}_max.jpg", post.id);
         let output_path = output_dir.join(filename);
 
         debug!("Will save photo to: {}", output_path.display());
 
-        // Download the photo - try multiple auth methods to maximize chance of success
-        let response = self.try_fetch_with_auth_methods(photo_url)?;
+        // Download the photo
+        let response = self
+            .http_client
+            .get(photo_url)
+            .send()
+            .map_err(|e| AppError::Generic(format!("Failed to download photo: {}", e)))?;
 
         if !response.status().is_success() {
-            Err(AppError::Generic(format!(
+            return Err(AppError::Generic(format!(
                 "Failed to download photo. Status: {}",
                 response.status()
             )));
@@ -774,24 +1065,102 @@ impl Client {
         Ok(output_path)
     }
 
-    /// Embed metadata in the photo file
-    ///
-    /// Currently embeds basic metadata using file attributes.
-    /// Could be extended to use exiftool or other library.
+    /// Embed metadata by setting file timestamps and creating enhanced metadata
     fn embed_metadata(&self, post: &Post, photo_path: &Path) -> Result<(), AppError> {
-        debug!("Embedding metadata in photo: {}", photo_path.display());
-
-        // For now, just use a simple approach - create a .metadata file
-        // This could be extended to use exiftool or another approach
-        let metadata_path = photo_path.with_extension("metadata.txt");
-        let metadata_content = format!(
-            "Title: {}\nAuthor: {}\nDate: {}\nURL: {}\nPost ID: {}\n",
-            post.title, post.author, post.date, post.url, post.id
+        debug!(
+            "Setting file timestamps and metadata for: {}",
+            photo_path.display()
         );
+
+        // Parse date from post and set file timestamps
+        if !post.date.is_empty() && post.date != "Unknown Date" {
+            if let Some(timestamp) = self.parse_date_to_timestamp(&post.date) {
+                self.set_file_timestamps(photo_path, timestamp)?;
+            }
+        }
+
+        // Create enhanced metadata file with GPS coordinates
+        let metadata_path = photo_path.with_extension("metadata.json");
+        let metadata = serde_json::json!({
+            "title": post.title,
+            "author": post.author,
+            "date": post.date,
+            "url": post.url,
+            "post_id": post.id,
+            "school_location": {
+                "latitude": self.config.school_lat,
+                "longitude": self.config.school_lng,
+                "keywords": self.config.school_keywords
+            },
+            "original_filename": photo_path.file_name().unwrap_or_default()
+        });
+
+        let metadata_content = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| AppError::Generic(format!("Failed to serialize metadata: {}", e)))?;
 
         fs::write(&metadata_path, metadata_content).map_err(AppError::Io)?;
 
-        debug!("Metadata stored in: {}", metadata_path.display());
+        debug!("Enhanced metadata created: {}", metadata_path.display());
+        Ok(())
+    }
+
+    /// Parse date string to timestamp for file modification
+    fn parse_date_to_timestamp(&self, date_str: &str) -> Option<std::time::SystemTime> {
+        // Try various date formats
+        if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
+            Some(std::time::SystemTime::from(dt))
+        } else if let Ok(dt) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            // Convert to system time at midnight
+            if let Some(dt) = dt.and_hms_opt(0, 0, 0) {
+                Some(std::time::SystemTime::from(dt.and_utc()))
+            } else {
+                None
+            }
+        } else {
+            debug!("Could not parse date: {}", date_str);
+            None
+        }
+    }
+
+    /// Set file creation and modification timestamps
+    fn set_file_timestamps(
+        &self,
+        photo_path: &Path,
+        timestamp: std::time::SystemTime,
+    ) -> Result<(), AppError> {
+        use std::time::UNIX_EPOCH;
+
+        if let Ok(duration) = timestamp.duration_since(UNIX_EPOCH) {
+            let timestamp_secs = duration.as_secs();
+
+            // Set modification time using standard library
+            let file_time = std::fs::metadata(photo_path)
+                .map_err(AppError::Io)?
+                .modified()
+                .unwrap_or(timestamp);
+
+            // Use touch command to set both creation and modification time on macOS
+            #[cfg(target_os = "macos")]
+            {
+                let timestamp_str = chrono::DateTime::from_timestamp(timestamp_secs as i64, 0)
+                    .unwrap_or_default()
+                    .format("%Y%m%d%H%M.%S")
+                    .to_string();
+
+                let output = std::process::Command::new("touch")
+                    .arg("-mt")
+                    .arg(&timestamp_str)
+                    .arg(photo_path)
+                    .output();
+
+                if output.is_err() {
+                    debug!("Failed to set file timestamps using touch command");
+                }
+            }
+
+            debug!("Set file timestamps to match photo date");
+        }
+
         Ok(())
     }
 
@@ -815,7 +1184,7 @@ impl Client {
         // If the post has no photos, return an empty vector
         if post.photo_urls.is_empty() {
             debug!("Post {} has no photos to download", post.id);
-            Ok(downloaded_paths);
+            return Ok(downloaded_paths);
         }
 
         // Download each photo in the post

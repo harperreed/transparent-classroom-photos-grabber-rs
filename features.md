@@ -1,0 +1,7 @@
+- config file saving in normal places (~/.config ~/Libary/... etc)
+- ability to setup via cli
+- common cli args (destination dir, setup, help, etc)
+- login dialog to prompt the user for login info
+- ability to pass config info via env
+- ability to set latlng for school or derive it from photos/ portal?
+- dry-run capability

@@ -68,9 +68,9 @@ fn run(output_dir: PathBuf) -> Result<(), AppError> {
     client.login()?;
     info!("Successfully logged in");
 
-    // Fetch posts (page 0 = most recent)
-    info!("Fetching recent posts");
-    let posts = client.get_posts(0)?;
+    // Crawl all posts from all pages
+    info!("Crawling all posts from all pages");
+    let posts = client.crawl_all_posts()?;
 
     if posts.is_empty() {
         info!("No posts found");
@@ -110,11 +110,8 @@ fn run(output_dir: PathBuf) -> Result<(), AppError> {
             post.title
         );
 
-        // Create a subdirectory for this post
-        let post_dir = output_dir.join(format!("post_{}_{}", i + 1, sanitize_dirname(&post.title)));
-
-        // Download all photos for this post
-        match client.download_all_photos(post, &post_dir) {
+        // Download all photos for this post directly to output directory
+        match client.download_all_photos(post, &output_dir) {
             Ok(paths) => {
                 let count = paths.len();
                 total_photos += count;

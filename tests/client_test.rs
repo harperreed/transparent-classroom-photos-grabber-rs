@@ -15,6 +15,9 @@ fn create_test_config() -> Config {
         password: "password123".to_string(),
         school_id: 12345,
         child_id: 67890,
+        school_lat: 41.9032776,
+        school_lng: -87.6663027,
+        school_keywords: "test, school, chicago".to_string(),
     }
 }
 
@@ -25,6 +28,9 @@ fn create_mock_client(server: &mockito::Server) -> Result<Client, AppError> {
         password: "password123".to_string(),
         school_id: 12345,
         child_id: 67890,
+        school_lat: 41.9032776,
+        school_lng: -87.6663027,
+        school_keywords: "test, school, chicago".to_string(),
     };
 
     // Use the mockito server URL as base
