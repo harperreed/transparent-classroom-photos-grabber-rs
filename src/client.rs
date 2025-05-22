@@ -92,34 +92,61 @@ impl Client {
 
     /// Login to Transparent Classroom
     ///
-    /// This method attempts to authenticate with Transparent Classroom.
+    /// This method attempts to authenticate with Transparent Classroom using multiple approaches.
     /// If real authentication fails, it falls back to "mock mode" for development
     /// and testing purposes.
     pub fn login(&self) -> Result<(), AppError> {
         debug!("Starting login flow");
+        info!("Attempting to authenticate with Transparent Classroom");
 
-        // Try API-based authentication first
+        // Step 1: Try API-based authentication first (usually most reliable)
         if let Ok(()) = self.login_api_basic_auth() {
             info!("Login successful via API Basic Auth");
-            Ok(())
-        } else {
-            // If we reach here, API auth failed. Try web-based login.
-            match self.login_web_form() {
-                Ok(()) => {
-                    info!("Login successful via web form");
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("Web form login failed: {}", e);
+            Ok(());
+        }
+        warn!("API Basic Auth failed - trying alternative methods");
 
-                    // For development and testing, we'll fall back to mock mode
-                    // so the rest of the functionality can still be tested
-                    warn!("Falling back to mock mode for development/testing purposes");
-                    info!("Mock login successful");
-                    Ok(())
+        // Step 2: Try web-based login via the standard form
+        if let Ok(()) = self.login_web_form() {
+            info!("Login successful via web form");
+            Ok(());
+        }
+        warn!("Web form login failed - trying alternative URL");
+
+        // Step 3: Try alternative domain in case the school URL has changed
+        if self.base_url.contains("/schools") {
+            let root_domain = self
+                .base_url
+                .split("/schools")
+                .next()
+                .unwrap_or(&self.base_url);
+
+            let alt_url = format!("{}/api/v1/children/{}", root_domain, self.config.child_id);
+            debug!("Trying API auth with alternative domain: {}", alt_url);
+
+            // Make request to the alternative URL with Basic Auth
+            let alt_resp = self
+                .http_client
+                .get(&alt_url)
+                .basic_auth(&self.config.email, Some(&self.config.password))
+                .send();
+
+            if let Ok(resp) = alt_resp {
+                if resp.status().is_success() {
+                    info!("Login successful via alternative domain API Basic Auth");
+                    Ok(());
                 }
             }
         }
+
+        warn!("All real authentication methods failed");
+
+        // For development and testing, we'll fall back to mock mode
+        // so the rest of the functionality can still be tested
+        warn!("USING MOCK MODE: This is not connecting to the real Transparent Classroom!");
+        warn!("In mock mode, the application will use generated sample data");
+        warn!("Mock login successful - but this is NOT a real login");
+        Ok(())
     }
 
     /// Attempts to authenticate via API with Basic Auth
@@ -139,7 +166,7 @@ impl Client {
 
         if !response.status().is_success() {
             let status = response.status();
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "API authentication failed with status: {}",
                 status
             )));
@@ -171,7 +198,7 @@ impl Client {
             .map_err(|e| AppError::Generic(format!("Failed to fetch sign-in page: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "Failed to fetch sign-in page. Status: {}",
                 response.status()
             )));
@@ -227,7 +254,7 @@ impl Client {
             let err_body = response
                 .text()
                 .unwrap_or_else(|_| "Could not read error response body".to_string());
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "Login failed. Status: {}. Details: {}",
                 status, err_body
             )));
@@ -240,14 +267,14 @@ impl Client {
             .map_err(|e| AppError::Generic(format!("Failed to read post-login page: {}", e)))?;
 
         if html.contains("Invalid email or password") {
-            return Err(AppError::Generic(
+            Err(AppError::Generic(
                 "Login failed: Invalid email or password".to_string(),
             ));
         }
 
         if !html.contains("Dashboard") && !html.contains("My Account") {
             warn!("Login may have failed - could not find expected post-login content");
-            return Err(AppError::Generic(
+            Err(AppError::Generic(
                 "Login failed: Could not verify successful login".to_string(),
             ));
         }
@@ -273,7 +300,7 @@ impl Client {
                 if let Some(token_input) = form.select(&auth_token_selector).next() {
                     if let Some(token) = token_input.value().attr("value") {
                         debug!("Found CSRF token in sign-in form: {}", token);
-                        return Ok(token.to_string());
+                        Ok(token.to_string());
                     }
                 }
             }
@@ -285,7 +312,7 @@ impl Client {
         if let Some(element) = document.select(&meta_selector).next() {
             if let Some(token) = element.value().attr("content") {
                 debug!("Found CSRF token in meta tag: {}", token);
-                return Ok(token.to_string());
+                Ok(token.to_string());
             }
         }
 
@@ -293,7 +320,7 @@ impl Client {
         if let Some(element) = document.select(&auth_token_selector).next() {
             if let Some(token) = element.value().attr("value") {
                 debug!("Found CSRF token in input element: {}", token);
-                return Ok(token.to_string());
+                Ok(token.to_string());
             }
         }
 
@@ -324,37 +351,48 @@ impl Client {
             format!("{}/observations?page={}", self.base_url, page)
         };
 
-        // Prepare fallback URLs
+        // Prepare fallback URLs - we'll try multiple paths to increase chances of success
+        let root_domain = if self.base_url.contains("/schools") {
+            self.base_url
+                .split("/schools")
+                .next()
+                .unwrap_or(&self.base_url)
+        } else {
+            &self.base_url
+        };
+
         let fallback_urls = [
             // 1. Try root domain URL
-            if self.base_url.contains("/schools") {
-                let root_domain = self
-                    .base_url
-                    .split("/schools")
-                    .next()
-                    .unwrap_or(&self.base_url);
-                if page == 0 {
-                    format!("{}/observations", root_domain)
-                } else {
-                    format!("{}/observations?page={}", root_domain, page)
-                }
+            if page == 0 {
+                format!("{}/observations", root_domain)
             } else {
-                primary_url.clone()
+                format!("{}/observations?page={}", root_domain, page)
             },
             // 2. Try specific child path if child_id is available
             format!(
                 "{}/children/{}/observations",
                 self.base_url, self.config.child_id
             ),
+            // 3. Try root domain with child path
+            format!(
+                "{}/children/{}/observations",
+                root_domain, self.config.child_id
+            ),
+            // 4. Try with standard path (in case school changed URL structure)
+            format!(
+                "{}/observations/child/{}",
+                self.base_url, self.config.child_id
+            ),
+            // 5. Try root domain with standard path
+            format!(
+                "{}/observations/child/{}",
+                root_domain, self.config.child_id
+            ),
         ];
 
-        // Try primary URL first
-        debug!("Sending GET request to primary URL: {}", primary_url);
-        let mut response = self
-            .http_client
-            .get(&primary_url)
-            .send()
-            .map_err(|e| AppError::Generic(format!("Failed to fetch posts: {}", e)));
+        // Try primary URL first with different auth methods
+        debug!("Trying primary URL: {}", primary_url);
+        let mut response = self.try_fetch_with_auth_methods(&primary_url);
 
         // If primary URL fails, try fallbacks
         if response.is_err() || !response.as_ref().unwrap().status().is_success() {
@@ -363,7 +401,7 @@ impl Client {
             for (i, fallback_url) in fallback_urls.iter().enumerate() {
                 debug!("Trying fallback URL {}: {}", i + 1, fallback_url);
 
-                match self.http_client.get(fallback_url).send() {
+                match self.try_fetch_with_auth_methods(fallback_url) {
                     Ok(resp) if resp.status().is_success() => {
                         debug!("Fallback URL {} succeeded", i + 1);
                         response = Ok(resp);
@@ -399,24 +437,29 @@ impl Client {
             primary_url.clone()
         };
 
-        // If all URLs failed, use mock data in development/testing mode
+        // If all URLs failed, only use mock data as a last resort
         let html = if let Ok(resp) = response {
             if resp.status().is_success() {
                 // We got a valid response, use it
+                info!("Successfully fetched posts data from Transparent Classroom");
                 resp.text().map_err(|e| {
                     AppError::Generic(format!("Failed to read posts page content: {}", e))
                 })?
             } else {
                 // All URLs failed but we're still running - we must be in mock mode
                 warn!(
-                    "All observation URLs failed. Status: {}. Using mock data.",
+                    "FAILED TO FETCH REAL DATA: All observation URLs failed. Status: {}.",
                     resp.status()
                 );
+                warn!("Falling back to mock data for development/testing purposes");
+                warn!("THIS IS NOT REAL DATA FROM TRANSPARENT CLASSROOM");
                 self.get_mock_observations_html()
             }
         } else {
             // All URLs failed with connection errors - use mock data
-            warn!("All observation URLs failed with connection errors. Using mock data.");
+            warn!("FAILED TO FETCH REAL DATA: All observation URLs failed with connection errors.");
+            warn!("Falling back to mock data for development/testing purposes");
+            warn!("THIS IS NOT REAL DATA FROM TRANSPARENT CLASSROOM");
             self.get_mock_observations_html()
         };
 
@@ -521,6 +564,86 @@ impl Client {
         element.value().attr(attr_name).map(|s| s.to_string())
     }
 
+    /// Try to fetch a URL using different authentication methods
+    ///
+    /// This method tries multiple authentication approaches to maximize chances of success.
+    fn try_fetch_with_auth_methods(
+        &self,
+        url: &str,
+    ) -> Result<reqwest::blocking::Response, AppError> {
+        debug!("Trying to fetch URL with different auth methods: {}", url);
+
+        // Method 1: Try with cookies (from previous web form login)
+        debug!("Trying with cookies from session");
+        match self.http_client.get(url).send() {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    debug!("Cookie auth successful for {}", url);
+                    Ok(resp)
+                } else {
+                    debug!("Cookie auth failed with status: {}", resp.status());
+                    // If not successful but we got a response, continuing to try Basic Auth
+
+                    // Method 2: Try with Basic Auth (API auth)
+                    debug!("Trying with Basic Auth for {}", url);
+                    match self
+                        .http_client
+                        .get(url)
+                        .basic_auth(&self.config.email, Some(&self.config.password))
+                        .send()
+                    {
+                        Ok(basic_resp) => {
+                            if basic_resp.status().is_success() {
+                                debug!("Basic Auth successful for {}", url);
+                                Ok(basic_resp);
+                            } else {
+                                debug!("Basic Auth failed with status: {}", basic_resp.status());
+                                // Return the response we got, even with error status
+                                Ok(basic_resp);
+                            }
+                        }
+                        Err(basic_err) => {
+                            // Basic auth failed with error - return the cookie response we had
+                            debug!("Basic Auth request failed: {}", basic_err);
+                            Ok(resp);
+                        }
+                    }
+                }
+            }
+            Err(cookie_err) => {
+                debug!("Cookie auth request failed: {}", cookie_err);
+
+                // Method 2: Try with Basic Auth (API auth)
+                debug!("Trying with Basic Auth for {}", url);
+                match self
+                    .http_client
+                    .get(url)
+                    .basic_auth(&self.config.email, Some(&self.config.password))
+                    .send()
+                {
+                    Ok(basic_resp) => {
+                        if basic_resp.status().is_success() {
+                            debug!("Basic Auth successful for {}", url);
+                            Ok(basic_resp);
+                        } else {
+                            debug!("Basic Auth failed with status: {}", basic_resp.status());
+                            // Return the response we got, even with error status
+                            Ok(basic_resp);
+                        }
+                    }
+                    Err(basic_err) => {
+                        // Both methods failed with network errors
+                        let err_msg = format!(
+                            "Failed to fetch URL with all auth methods: {}. Errors: cookie={:?}, basic={:?}",
+                            url, cookie_err, basic_err
+                        );
+                        Err(AppError::Generic(err_msg));
+                    }
+                }
+            }
+        }
+    }
+
     /// Generate mock observations HTML for development/testing
     fn get_mock_observations_html(&self) -> String {
         let timestamp = std::time::SystemTime::now()
@@ -586,7 +709,7 @@ impl Client {
     ) -> Result<PathBuf, AppError> {
         // Check if the post has photos
         if post.photo_urls.is_empty() {
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "Post {} has no photos to download",
                 post.id
             )));
@@ -594,7 +717,7 @@ impl Client {
 
         // Check if the requested photo index exists
         if photo_index >= post.photo_urls.len() {
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "Photo index {} out of range for post with {} photos",
                 photo_index,
                 post.photo_urls.len()
@@ -624,15 +747,11 @@ impl Client {
 
         debug!("Will save photo to: {}", output_path.display());
 
-        // Download the photo
-        let response = self
-            .http_client
-            .get(photo_url)
-            .send()
-            .map_err(|e| AppError::Generic(format!("Failed to download photo: {}", e)))?;
+        // Download the photo - try multiple auth methods to maximize chance of success
+        let response = self.try_fetch_with_auth_methods(photo_url)?;
 
         if !response.status().is_success() {
-            return Err(AppError::Generic(format!(
+            Err(AppError::Generic(format!(
                 "Failed to download photo. Status: {}",
                 response.status()
             )));
@@ -696,7 +815,7 @@ impl Client {
         // If the post has no photos, return an empty vector
         if post.photo_urls.is_empty() {
             debug!("Post {} has no photos to download", post.id);
-            return Ok(downloaded_paths);
+            Ok(downloaded_paths);
         }
 
         // Download each photo in the post
