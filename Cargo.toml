@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation to download photos from Transparent Classroom"
-default-run = "transparent-classroom-photos-grabber"
+default-run = "tc-photos-grabber"
 
 [[bin]]
-name = "transparent-classroom-photos-grabber"
+name = "tc-photos-grabber"
 path = "src/bin/main.rs"
 
 [dependencies]
