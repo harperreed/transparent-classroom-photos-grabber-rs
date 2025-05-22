@@ -197,6 +197,120 @@ impl Config {
         Ok(())
     }
 
+    /// Attempt to derive school location from the Transparent Classroom portal
+    pub fn derive_school_location(
+        school_id: u32,
+        email: &str,
+        password: &str,
+    ) -> Result<(f64, f64), ConfigError> {
+        use reqwest::blocking::Client as ReqwestClient;
+        use scraper::{Html, Selector};
+
+        // Create a temporary HTTP client
+        let client = ReqwestClient::new();
+
+        // Try to get school information from the API or web interface
+        let base_url = format!("https://www.transparentclassroom.com/schools/{}", school_id);
+
+        // First try the API endpoint for school information
+        let api_url = format!(
+            "{}/api/v1/schools/{}",
+            "https://www.transparentclassroom.com", school_id
+        );
+
+        if let Ok(response) = client
+            .get(&api_url)
+            .basic_auth(email, Some(password))
+            .send()
+        {
+            if response.status().is_success() {
+                if let Ok(text) = response.text() {
+                    // Try to parse JSON response for school info with location
+                    if let Ok(school_info) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let (Some(lat), Some(lng)) = (
+                            school_info.get("latitude").and_then(|v| v.as_f64()),
+                            school_info.get("longitude").and_then(|v| v.as_f64()),
+                        ) {
+                            return Ok((lat, lng));
+                        }
+                    }
+                }
+            }
+        }
+
+        // If API doesn't work, try to scrape the school page for location info
+        if let Ok(response) = client.get(&base_url).send() {
+            if response.status().is_success() {
+                if let Ok(html) = response.text() {
+                    let document = Html::parse_document(&html);
+
+                    // Look for common patterns that might contain coordinates
+                    // Check for Google Maps embed or similar
+                    let script_selector = Selector::parse("script").unwrap();
+                    for script in document.select(&script_selector) {
+                        let script_text = script.inner_html();
+
+                        // Look for lat/lng patterns in JavaScript
+                        if let Some((lat, lng)) = Self::extract_coordinates_from_text(&script_text)
+                        {
+                            return Ok((lat, lng));
+                        }
+                    }
+
+                    // Look for meta tags that might contain location
+                    let meta_selector = Selector::parse("meta").unwrap();
+                    for meta in document.select(&meta_selector) {
+                        if let Some(content) = meta.value().attr("content") {
+                            if let Some((lat, lng)) = Self::extract_coordinates_from_text(content) {
+                                return Ok((lat, lng));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(ConfigError::IoError(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not derive school location from portal",
+        )))
+    }
+
+    /// Extract latitude and longitude coordinates from text
+    fn extract_coordinates_from_text(text: &str) -> Option<(f64, f64)> {
+        use regex::Regex;
+
+        // Look for various coordinate patterns
+        let patterns = [
+            // lat: 40.7128, lng: -74.0060 or latitude: 40.7128, longitude: -74.0060
+            r"lat(?:itude)?\s*:\s*([+-]?\d+\.?\d*),?\s*lng|lon(?:gitude)?\s*:\s*([+-]?\d+\.?\d*)",
+            // "40.7128,-74.0060" or "40.7128, -74.0060"
+            r"([+-]?\d+\.?\d+)\s*,\s*([+-]?\d+\.?\d+)",
+            // Google Maps style: new google.maps.LatLng(40.7128, -74.0060)
+            r"LatLng\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)",
+        ];
+
+        for pattern in &patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(captures) = re.captures(text) {
+                    if let (Some(lat_str), Some(lng_str)) = (captures.get(1), captures.get(2)) {
+                        if let (Ok(lat), Ok(lng)) = (
+                            lat_str.as_str().parse::<f64>(),
+                            lng_str.as_str().parse::<f64>(),
+                        ) {
+                            // Basic validation: reasonable coordinate ranges
+                            if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng) {
+                                return Some((lat, lng));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Interactive setup of configuration
     pub fn interactive_setup() -> Result<Self, ConfigError> {
         use dialoguer::{Input, Password};
@@ -224,17 +338,64 @@ impl Config {
             .interact_text()
             .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        let school_lat: f64 = Input::new()
-            .with_prompt("School Latitude")
-            .with_initial_text("0.0")
-            .interact_text()
+        // For lat/lng, offer to derive from school location or enter manually
+        use dialoguer::Confirm;
+
+        let derive_location = Confirm::new()
+            .with_prompt("Would you like to try to derive the school's location automatically?")
+            .default(true)
+            .interact()
             .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        let school_lng: f64 = Input::new()
-            .with_prompt("School Longitude")
-            .with_initial_text("0.0")
-            .interact_text()
-            .map_err(|e| ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let (school_lat, school_lng) = if derive_location {
+            println!("Attempting to derive school location...");
+            match Self::derive_school_location(school_id, &email, &password) {
+                Ok((lat, lng)) => {
+                    println!("✅ Successfully derived school location: {}, {}", lat, lng);
+                    (lat, lng)
+                }
+                Err(e) => {
+                    println!("⚠️  Could not derive location automatically: {}", e);
+                    println!("You can enter coordinates manually or leave as 0.0, 0.0");
+
+                    let lat: f64 = Input::new()
+                        .with_prompt("School Latitude")
+                        .with_initial_text("0.0")
+                        .interact_text()
+                        .map_err(|e| {
+                            ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        })?;
+
+                    let lng: f64 = Input::new()
+                        .with_prompt("School Longitude")
+                        .with_initial_text("0.0")
+                        .interact_text()
+                        .map_err(|e| {
+                            ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        })?;
+
+                    (lat, lng)
+                }
+            }
+        } else {
+            let lat: f64 = Input::new()
+                .with_prompt("School Latitude")
+                .with_initial_text("0.0")
+                .interact_text()
+                .map_err(|e| {
+                    ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                })?;
+
+            let lng: f64 = Input::new()
+                .with_prompt("School Longitude")
+                .with_initial_text("0.0")
+                .interact_text()
+                .map_err(|e| {
+                    ConfigError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                })?;
+
+            (lat, lng)
+        };
 
         let school_keywords: String = Input::new()
             .with_prompt("School Keywords")
