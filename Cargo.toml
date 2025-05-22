@@ -2,8 +2,12 @@
 name = "transparent-classroom-photos-grabber-rs"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Harper Reed <harper@modest.com>"]
 description = "A Rust implementation to download photos from Transparent Classroom"
+license = "MIT"
+repository = "https://github.com/harperreed/transparent-classroom-photos-grabber-rs"
+homepage = "https://github.com/harperreed/transparent-classroom-photos-grabber-rs"
+# documentation = "https://docs.rs/transparent-classroom-photos-grabber-rs"
 default-run = "tc-photos-grabber"
 
 [[bin]]
