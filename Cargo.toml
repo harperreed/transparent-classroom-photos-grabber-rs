@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation to download photos from Transparent Classroom"
-default-run = "main"
+default-run = "transparent-classroom-photos-grabber"
+
+[[bin]]
+name = "transparent-classroom-photos-grabber"
+path = "src/bin/main.rs"
 
 [dependencies]
 dotenv = "0.15.0"
@@ -18,6 +22,9 @@ scraper = "0.18.1"
 dirs = "5.0.1"
 kamadak-exif = "0.5.5"
 chrono = { version = "0.4.31", features = ["serde"] }
+indicatif = "0.17.7"
+colored = "2.1.0"
+console = "0.15.8"
 
 [dev-dependencies]
 tempfile = "3.10.1"
