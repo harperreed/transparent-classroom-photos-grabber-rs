@@ -141,6 +141,7 @@ fn run(output_dir: PathBuf) -> Result<(), AppError> {
 }
 
 // Helper function to sanitize directory names
+#[allow(dead_code)]
 fn sanitize_dirname(input: &str) -> String {
     let mut result = input.trim().to_owned();
 

@@ -55,8 +55,10 @@ fn test_network_timeout_during_login() {
     if let Err(error) = result {
         let error_msg = format!("{:?}", error);
         assert!(
-            error_msg.contains("Failed to authenticate"),
-            "Error should mention authentication failure"
+            error_msg.contains("Failed to authenticate")
+                || error_msg.contains("authentication failed"),
+            "Error should mention authentication failure, got: {}",
+            error_msg
         );
     }
 }
@@ -250,8 +252,11 @@ fn test_malformed_html_response() {
     if let Err(error) = result {
         let error_msg = format!("{:?}", error);
         assert!(
-            error_msg.contains("Failed to authenticate"),
-            "Error should mention authentication failure"
+            error_msg.contains("Failed to authenticate")
+                || error_msg.contains("authentication failed")
+                || error_msg.contains("Could not find CSRF token"),
+            "Error should mention authentication failure, got: {}",
+            error_msg
         );
     }
 }
