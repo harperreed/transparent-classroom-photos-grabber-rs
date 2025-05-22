@@ -961,7 +961,11 @@ impl Client {
                         src.to_string()
                     } else {
                         // Handle relative URLs
-                        let base_domain = self.base_url.split("/schools").next().unwrap_or("");
+                        let base_domain = if self.base_url.contains("/schools") {
+                            self.base_url.split("/schools").next().unwrap_or("")
+                        } else {
+                            &self.base_url
+                        };
                         format!("{}{}", base_domain, src)
                     };
                     photo_urls.push(photo_url);
@@ -995,26 +999,31 @@ impl Client {
         element.value().attr(attr_name).map(|s| s.to_string())
     }
 
-    /// Check if a photo already exists to avoid duplicate downloads
-    fn photo_already_exists(&self, post: &Post, output_dir: &Path) -> Option<PathBuf> {
-        let photo_id = &post.id;
+    /// Check if a specific photo (by index) already exists to avoid duplicate downloads
+    fn photo_already_exists_for_index(
+        &self,
+        post: &Post,
+        photo_index: usize,
+        output_dir: &Path,
+    ) -> Option<PathBuf> {
+        // Generate the expected filename for this specific photo index
+        let filename = if post.photo_urls.len() > 1 {
+            format!("{}_{}_max.jpg", post.id, photo_index)
+        } else {
+            format!("{}_max.jpg", post.id)
+        };
+        let expected_path = output_dir.join(filename);
 
-        // Check for existing files with the photo ID prefix
-        if let Ok(entries) = fs::read_dir(output_dir) {
-            for entry in entries.flatten() {
-                let file_name = entry.file_name();
-                let file_name_str = file_name.to_string_lossy();
-
-                // Look for files that start with the photo_id followed by underscore
-                if file_name_str.starts_with(&format!("{}_", photo_id)) {
-                    let existing_path = entry.path();
-                    debug!("Found existing photo: {}", existing_path.display());
-                    return Some(existing_path);
-                }
-            }
+        if expected_path.exists() {
+            debug!(
+                "Found existing photo for index {}: {}",
+                photo_index,
+                expected_path.display()
+            );
+            Some(expected_path)
+        } else {
+            None
         }
-
-        None
     }
 
     /// Download a photo from a post to the local filesystem
@@ -1057,11 +1066,14 @@ impl Client {
             fs::create_dir_all(output_dir).map_err(AppError::Io)?;
         }
 
-        // Check for existing photos first
-        if let Some(existing_path) = self.photo_already_exists(post, output_dir) {
+        // Check for existing photos first (specific to this photo index)
+        if let Some(existing_path) =
+            self.photo_already_exists_for_index(post, photo_index, output_dir)
+        {
             info!(
-                "Skipping {} - already exists as {}",
+                "Skipping {} photo {} - already exists as {}",
                 post.id,
+                photo_index,
                 existing_path.display()
             );
             return Ok(existing_path);
