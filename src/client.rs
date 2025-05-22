@@ -230,7 +230,7 @@ impl Client {
         let mut form_data = HashMap::new();
         form_data.insert("utf8", "✓");
         form_data.insert("authenticity_token", &csrf_token);
-        form_data.insert("soul[email]", &self.config.email);
+        form_data.insert("soul[login]", &self.config.email);
         form_data.insert("soul[password]", &self.config.password);
         form_data.insert("soul[remember_me]", "0");
         form_data.insert("commit", "Sign in");
@@ -333,7 +333,7 @@ impl Client {
         }
 
         // Check for login form still being present (indicates failed login)
-        if html.contains("soul[email]") && html.contains("soul[password]") {
+        if html.contains("soul[login]") && html.contains("soul[password]") {
             debug!("Login form still present in response - login likely failed");
             return Err(AppError::Generic(
                 "Login failed: Still seeing login form after submission".to_string(),
@@ -388,13 +388,13 @@ impl Client {
 
         // Try to find the main sign-in form by finding forms and checking if they contain the right fields
         let form_selector = Selector::parse("form").unwrap();
-        let input_selector = Selector::parse("input[name=\"soul[email]\"]").unwrap();
+        let input_selector = Selector::parse("input[name=\"soul[login]\"]").unwrap();
         let auth_token_selector = Selector::parse("input[name=\"authenticity_token\"]").unwrap();
 
         // Go through all forms and find one that has the sign-in form fields
         let mut found_signin_form = false;
         for form in document.select(&form_selector) {
-            // Check if this is the sign-in form by looking for soul[email] field
+            // Check if this is the sign-in form by looking for soul[login] field
             if form.select(&input_selector).next().is_some() {
                 found_signin_form = true;
                 // This is the sign-in form, look for the authenticity token

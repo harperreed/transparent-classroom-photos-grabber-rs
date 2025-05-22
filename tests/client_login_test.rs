@@ -138,7 +138,7 @@ fn test_web_form_fallback_when_api_fails() {
         <body>
             <form action="/souls/sign_in" method="post">
                 <input type="hidden" name="authenticity_token" value="test_csrf_token_12345" />
-                <input type="text" name="soul[email]" />
+                <input type="text" name="soul[login]" />
                 <input type="password" name="soul[password]" />
                 <input type="submit" name="commit" value="Sign In" />
             </form>
@@ -177,7 +177,7 @@ fn test_web_form_fallback_when_api_fails() {
             )
             .match_body(Matcher::AllOf(vec![
                 Matcher::Regex("authenticity_token=test_csrf_token_12345".to_string()),
-                Matcher::Regex("soul%5Bemail%5D=test%40example.com".to_string()),
+                Matcher::Regex("soul%5Blogin%5D=test%40example.com".to_string()),
                 Matcher::Regex("soul%5Bpassword%5D=password123".to_string()),
             ]))
             .with_status(200)
@@ -226,7 +226,7 @@ fn test_mock_mode_fallback_when_both_auth_methods_fail() {
         <body>
             <form action="/souls/sign_in" method="post">
                 <input type="hidden" name="authenticity_token" value="test_csrf_token_12345" />
-                <input type="text" name="soul[email]" />
+                <input type="text" name="soul[login]" />
                 <input type="password" name="soul[password]" />
                 <input type="submit" name="commit" value="Sign In" />
             </form>

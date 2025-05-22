@@ -86,7 +86,7 @@ fn test_complete_workflow_login_posts_download() {
         <body>
             <form action="/souls/sign_in" method="post">
                 <input type="hidden" name="authenticity_token" value="test_csrf_token_12345" />
-                <input type="text" name="soul[email]" />
+                <input type="text" name="soul[login]" />
                 <input type="password" name="soul[password]" />
                 <input type="submit" name="commit" value="Sign In" />
             </form>
@@ -122,7 +122,7 @@ fn test_complete_workflow_login_posts_download() {
             )
             .match_body(Matcher::AllOf(vec![
                 Matcher::Regex("authenticity_token=test_csrf_token_12345".to_string()),
-                Matcher::Regex("soul%5Bemail%5D=test%40example.com".to_string()),
+                Matcher::Regex("soul%5Blogin%5D=test%40example.com".to_string()),
                 Matcher::Regex("soul%5Bpassword%5D=password123".to_string()),
             ]))
             .with_status(200)
@@ -338,7 +338,7 @@ fn test_workflow_resilience_to_partial_failures() {
             )
             .match_body(Matcher::AllOf(vec![
                 Matcher::Regex("authenticity_token=test_csrf_token_12345".to_string()),
-                Matcher::Regex("soul%5Bemail%5D=test%40example.com".to_string()),
+                Matcher::Regex("soul%5Blogin%5D=test%40example.com".to_string()),
                 Matcher::Regex("soul%5Bpassword%5D=password123".to_string()),
             ]))
             .with_status(200)
